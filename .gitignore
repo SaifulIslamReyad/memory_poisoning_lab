@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data (databases, archives, sandboxes)
+data/lab.sqlite
+data/models.sqlite
+data/archives/
+data/sandbox/
+data/sandboxes/
+ecommerce.db
+
+# Environment
+.env
+
+# Test artifacts
+.test_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+google-chrome-stable_current_amd64.deb
+google-chrome-stable_current_amd64.deb
