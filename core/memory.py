@@ -305,14 +305,14 @@ def search_memory(
             ORDER BY m.created_at DESC, m.id DESC
             LIMIT ?
             """,
-            (
-                namespace,
-                policy,
-                f"%{query.lower()}%",
-                f"%{query.lower()}%",
-                max(1, int(limit)),
-            ),
-        ).fetchall()
+        (
+            namespace,
+            policy,
+            f"%{query.lower()}%",
+            f"%{query.lower()}%",
+            max(1, int(limit)),
+        ),
+    ).fetchall()
     result = []
     for row in rows:
         item = dict(row)

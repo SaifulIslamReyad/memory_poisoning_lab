@@ -19,7 +19,11 @@ class TestHostedConfiguration(unittest.TestCase):
 
     def test_postgres_queries_are_restricted(self) -> None:
         self.assertEqual(_validate_postgres_query("SELECT 1;"), "SELECT 1")
-        for query in ("DELETE FROM users", "SELECT 1; SELECT 2", "SELECT * FROM public.users"):
+        for query in (
+            "DELETE FROM users",
+            "SELECT 1; SELECT 2",
+            "SELECT * FROM public.users",
+        ):
             with self.assertRaises(UnsafeSQLError):
                 _validate_postgres_query(query)
 

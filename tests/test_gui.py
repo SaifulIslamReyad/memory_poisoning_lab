@@ -100,8 +100,14 @@ class TestChartsHelpers(unittest.TestCase):
 
     def test_model_comparison_data(self) -> None:
         experiments = [
-            {"id": "exp1", "model_id": "groq/test", "title": "Test", "status": "completed",
-             "session_count": 2, "turn_count": 10},
+            {
+                "id": "exp1",
+                "model_id": "groq/test",
+                "title": "Test",
+                "status": "completed",
+                "session_count": 2,
+                "turn_count": 10,
+            },
         ]
         result = charts.model_comparison_data(experiments)
         self.assertEqual(len(result), 1)
@@ -136,10 +142,12 @@ class TestChartsHelpers(unittest.TestCase):
 class TestAppFunctions(unittest.TestCase):
     def test_main_is_callable(self) -> None:
         import app as app_module
+
         self.assertTrue(callable(app_module.main))
 
     def test_streamlit_check_function(self) -> None:
         import app as app_module
+
         result = app_module._streamlit_available()
         self.assertIsInstance(result, bool)
 

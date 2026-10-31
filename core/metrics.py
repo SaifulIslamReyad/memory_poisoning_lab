@@ -11,7 +11,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .config import json_dumps, new_id, utc_now    # json_dumps safely serializes to JSON; new_id generates prefixed IDs; utc_now gives normalized timestamp
+from .config import (
+    json_dumps,
+    new_id,
+    utc_now,
+)  # json_dumps safely serializes to JSON; new_id generates prefixed IDs; utc_now gives normalized timestamp
 
 
 def record_metric(
@@ -45,18 +49,20 @@ def record_metric(
         """,
         (
             metric_id,
-            experiment_id,                        # experiment the metric belongs to
-            session_id,                           # optional session scope (nullable)
-            turn_id,                              # optional turn scope (nullable)
-            name.strip(),                         # stored without leading/trailing whitespace
-            float(value),                         # ensure the value is a proper float
-            label,                                # optional categorical label (e.g., "safe"/"unsafe")
-            json_dumps(details) if details is not None else None,  # optional structured payload
-            utc_now(),                            # timestamp of when the metric was recorded
+            experiment_id,  # experiment the metric belongs to
+            session_id,  # optional session scope (nullable)
+            turn_id,  # optional turn scope (nullable)
+            name.strip(),  # stored without leading/trailing whitespace
+            float(value),  # ensure the value is a proper float
+            label,  # optional categorical label (e.g., "safe"/"unsafe")
+            (
+                json_dumps(details) if details is not None else None
+            ),  # optional structured payload
+            utc_now(),  # timestamp of when the metric was recorded
         ),
     )
     if commit:
-        connection.commit()                      # commit transaction if caller owns it
+        connection.commit()  # commit transaction if caller owns it
     return metric_id
 
 
@@ -143,13 +149,15 @@ def summarize_experiment(
     custom = {}  # build a nested dict keyed by metric name
     for metric in metrics:
         item: dict[str, Any] = {"value": metric["value"]}
-        if metric["label"]:                           # include label if present
+        if metric["label"]:  # include label if present
             item["label"] = metric["label"]
         if metric["details_json"]:
             try:
-                item["details"] = json.loads(metric["details_json"])  # parse structured details
+                item["details"] = json.loads(
+                    metric["details_json"]
+                )  # parse structured details
             except ValueError:
-                item["details"] = metric["details_json"]               # fall back to raw JSON string
+                item["details"] = metric["details_json"]  # fall back to raw JSON string
         custom[metric["name"]] = item
     # Pre-coerce frequently-used values to int for safe arithmetic
     assistant_turns = int(row["assistant_turns"] or 0)
@@ -158,8 +166,8 @@ def summarize_experiment(
     # Build and return the comprehensive summary
     return {
         "experiment_id": experiment_id,
-        "status": experiment["status"],          # experiment lifecycle status
-        "model_id": experiment["model_id"],       # model used in the experiment
+        "status": experiment["status"],  # experiment lifecycle status
+        "model_id": experiment["model_id"],  # model used in the experiment
         "sessions": int(row["sessions"] or 0),
         "turns": int(row["turns"] or 0),
         "assistant_turns": assistant_turns,
@@ -196,7 +204,7 @@ def summarize_experiment(
         "prompt_tokens": int(row["prompt_tokens"] or 0),
         "completion_tokens": int(row["completion_tokens"] or 0),
         "errors": int(row["errors"] or 0),
-        "custom": custom,                        # user-defined metric values
+        "custom": custom,  # user-defined metric values
     }
 
 

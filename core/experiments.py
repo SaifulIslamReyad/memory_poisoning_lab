@@ -185,9 +185,7 @@ def append_turn(
     return turn_id
 
 
-def get_experiment(
-    connection: Any, experiment_id: str
-) -> dict[str, Any] | None:
+def get_experiment(connection: Any, experiment_id: str) -> dict[str, Any] | None:
     """Fetch a single experiment by ID, or None if not found."""
     row = connection.execute(
         "SELECT * FROM experiments WHERE id = ?", (experiment_id,)
@@ -238,9 +236,7 @@ def list_experiments(
     return result
 
 
-def get_session(
-    connection: Any, session_id: str
-) -> dict[str, Any] | None:
+def get_session(connection: Any, session_id: str) -> dict[str, Any] | None:
     """Fetch a single session by ID, or None if not found."""
     row = connection.execute(
         "SELECT * FROM sessions WHERE id = ?", (session_id,)
@@ -329,9 +325,7 @@ def get_turns(
     return [_decode_turn(row) for row in rows]
 
 
-def get_session_messages(
-    connection: Any, session_id: str
-) -> list[dict[str, str]]:
+def get_session_messages(connection: Any, session_id: str) -> list[dict[str, str]]:
     """Return the conversation messages for a session (system/user/assistant roles only)."""
     rows = connection.execute(
         "SELECT role, content FROM turns WHERE session_id = ? AND role IN ('system', 'user', 'assistant') AND content IS NOT NULL ORDER BY sequence",

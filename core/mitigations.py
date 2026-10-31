@@ -9,23 +9,27 @@ from __future__ import annotations
 
 from typing import Any
 
-from .config import new_id, redact, utc_now    # new_id generates IDs with prefix; redact scrubs secrets; utc_now gives timestamp
+from .config import (
+    new_id,
+    redact,
+    utc_now,
+)  # new_id generates IDs with prefix; redact scrubs secrets; utc_now gives timestamp
 from .memory import (
-    delete_memory,                # permanently remove memory events
-    expire_memory,                # mark events as expired based on TTL
-    memory_snapshot_hash,         # compute a deterministic hash over memory state
-    quarantine_memory,            # move events to quarantined status
-    reset_memory,                 # reset all memory events in a namespace
+    delete_memory,  # permanently remove memory events
+    expire_memory,  # mark events as expired based on TTL
+    memory_snapshot_hash,  # compute a deterministic hash over memory state
+    quarantine_memory,  # move events to quarantined status
+    reset_memory,  # reset all memory events in a namespace
 )
 
 # The set of valid mitigation strategy names; must be checked before dispatch
 STRATEGIES = {
-    "quarantine",                 # quarantine suspicious memory events
-    "delete",                     # delete memory events entirely
-    "trusted_sources_only",       # quarantine everything not from trusted sources
-    "require_confirmation",       # quarantine all non-trusted/tool/system events
-    "ttl",                        # expire events based on TTL policy
-    "reset",                      # wipe and reset all memory in the namespace
+    "quarantine",  # quarantine suspicious memory events
+    "delete",  # delete memory events entirely
+    "trusted_sources_only",  # quarantine everything not from trusted sources
+    "require_confirmation",  # quarantine all non-trusted/tool/system events
+    "ttl",  # expire events based on TTL policy
+    "reset",  # wipe and reset all memory in the namespace
 }
 
 
@@ -71,22 +75,32 @@ def apply_mitigation(
             "SELECT memory_namespace FROM sessions WHERE experiment_id = ? ORDER BY started_at LIMIT 1",
             (experiment_id,),
         ).fetchall()
-        namespace = rows[0]["memory_namespace"] if rows else f"namespace_{experiment_id}"
+        namespace = (
+            rows[0]["memory_namespace"] if rows else f"namespace_{experiment_id}"
+        )
     # Validate that the namespace actually belongs to this experiment
-    if namespace and connection.execute(
-        "SELECT 1 FROM sessions WHERE experiment_id = ? AND memory_namespace = ? LIMIT 1",
-        (experiment_id, namespace),
-    ).fetchone() is None:
+    if (
+        namespace
+        and connection.execute(
+            "SELECT 1 FROM sessions WHERE experiment_id = ? AND memory_namespace = ? LIMIT 1",
+            (experiment_id, namespace),
+        ).fetchone()
+        is None
+    ):
         raise ValueError("memory namespace does not belong to experiment")
     # Validate that the turn belongs to this experiment (if provided)
-    if turn_id and connection.execute(
-        "SELECT 1 FROM turns t JOIN sessions s ON s.id = t.session_id WHERE t.id = ? AND s.experiment_id = ?",
-        (turn_id, experiment_id),
-    ).fetchone() is None:
+    if (
+        turn_id
+        and connection.execute(
+            "SELECT 1 FROM turns t JOIN sessions s ON s.id = t.session_id WHERE t.id = ? AND s.experiment_id = ?",
+            (turn_id, experiment_id),
+        ).fetchone()
+        is None
+    ):
         raise KeyError(f"unknown turn for experiment: {turn_id}")
     # Capture the memory hash before mitigation to establish a baseline
     before = memory_snapshot_hash(connection, namespace)
-    affected = 0                          # count of rows affected by the mitigation
+    affected = 0  # count of rows affected by the mitigation
     # Dispatch to the appropriate strategy implementation
     if strategy == "quarantine":
         affected = quarantine_memory(
@@ -135,8 +149,10 @@ def apply_mitigation(
         affected = expire_memory(connection, namespace=namespace, commit=False)
     # Capture the memory hash after mitigation to show the delta
     after = memory_snapshot_hash(connection, namespace)
-    mitigation_id = new_id("mit_")                # generate a unique ID for this mitigation record
-    mitigation_result = redact(result) if result else f"affected {affected} memory event(s)"
+    mitigation_id = new_id("mit_")  # generate a unique ID for this mitigation record
+    mitigation_result = (
+        redact(result) if result else f"affected {affected} memory event(s)"
+    )
     # Persist the mitigation record with before/after hashes
     connection.execute(
         """
@@ -180,8 +196,8 @@ def list_mitigations(
     strategy: str | None = None,
 ) -> list[dict[str, Any]]:
     """Query mitigations with optional filtering by experiment, turn, or strategy."""
-    clauses: list[str] = []                         # collect WHERE clause fragments
-    values: list[Any] = []                          # collect parameter bindings
+    clauses: list[str] = []  # collect WHERE clause fragments
+    values: list[Any] = []  # collect parameter bindings
     if experiment_id:
         clauses.append("experiment_id = ?")
         values.append(experiment_id)
