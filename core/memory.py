@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
@@ -13,7 +12,7 @@ from .config import canonical_json, json_dumps, new_id, redact, utc_now
 from .database import transaction
 
 
-def _commit(connection: sqlite3.Connection) -> None:
+def _commit(connection: Any) -> None:
     """Commit the current transaction on the connection."""
     connection.commit()
 
@@ -108,7 +107,7 @@ def _is_expired(expires_at: str | None) -> bool:
 
 
 def memory_snapshot_hash(
-    connection: sqlite3.Connection,
+    connection: Any,
     namespace: str,
     *,
     include_inactive: bool = False,
@@ -151,7 +150,7 @@ def memory_snapshot_hash(
 
 
 def write_memory(
-    connection: sqlite3.Connection,
+    connection: Any,
     session_id: str,
     key: str,
     value: Any,
@@ -213,7 +212,7 @@ def write_memory(
 
 
 def record_memory_event(
-    connection: sqlite3.Connection,
+    connection: Any,
     session_id: str,
     key: str,
     value: Any = None,
@@ -245,7 +244,7 @@ def record_memory_event(
 
 
 def write_summary_memory(
-    connection: sqlite3.Connection,
+    connection: Any,
     session_id: str,
     key: str,
     summary: str,
@@ -263,7 +262,7 @@ def write_summary_memory(
 
 
 def write_document_memory(
-    connection: sqlite3.Connection,
+    connection: Any,
     session_id: str,
     key: str,
     document: Any,
@@ -280,40 +279,8 @@ def write_document_memory(
     )
 
 
-def ensure_document_index(connection: sqlite3.Connection) -> bool:
-    """Create or rebuild the FTS5 index for memory search. Returns True on success."""
-    if getattr(connection, "is_postgres", False):
-        return False
-    try:
-        # Create the FTS5 virtual table if it doesn't exist
-        connection.execute(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(memory_key, value_text, memory_id UNINDEXED)"
-        )
-        # Clear any existing index entries
-        connection.execute("DELETE FROM memory_fts")
-        # Fetch all write/update memory events to index
-        rows = connection.execute("""
-            SELECT rowid AS source_rowid, id, memory_key, COALESCE(value_json, '')
-            FROM memory_events
-            WHERE operation IN ('write', 'update')
-            """).fetchall()
-        # Bulk insert into the FTS table
-        connection.executemany(
-            "INSERT INTO memory_fts(rowid, memory_key, value_text, memory_id) VALUES (?, ?, ?, ?)",
-            [
-                (row["source_rowid"], row["memory_key"], row[3], row["id"])
-                for row in rows
-            ],
-        )
-        connection.commit()
-        return True
-    except sqlite3.OperationalError:
-        # FTS5 may not be available in all SQLite builds — return False gracefully
-        return False
-
-
 def search_memory(
-    connection: sqlite3.Connection,
+    connection: Any,
     namespace: str,
     query: str,
     *,
@@ -326,43 +293,8 @@ def search_memory(
     # Return empty list for empty queries
     if not query.strip():
         return []
-    # Check if the FTS5 index table exists
-    fts_exists = None
-    if not getattr(connection, "is_postgres", False):
-        fts_exists = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_fts'"
-        ).fetchone()
-    if fts_exists:
-        try:
-            fts_clauses = [
-                "s.memory_namespace = ?",
-                "memory_fts MATCH ?",
-                "m.operation IN ('write', 'update')",
-            ]
-            fts_values: list[Any] = [namespace, query]
-            if policy in {"active", "trusted", "untrusted"}:
-                fts_clauses.append("m.status = 'active'")
-            # Try FTS full-text search first
-            fts_rows = connection.execute(
-                f"""
-                SELECT m.*
-                FROM memory_fts f
-                JOIN memory_events m ON m.id = f.memory_id
-                JOIN sessions s ON s.id = m.session_id
-                WHERE {' AND '.join(fts_clauses)}
-                ORDER BY m.created_at DESC, m.id DESC
-                LIMIT ?
-                """,
-                [*fts_values, max(1, int(limit))],
-            ).fetchall()
-            if fts_rows:
-                rows = fts_rows
-        except sqlite3.OperationalError:
-            pass
-    # Fallback to LIKE-based search if FTS failed or isn't available
-    if "rows" not in locals():
-        rows = connection.execute(
-            """
+    rows = connection.execute(
+        """
             SELECT m.*
             FROM memory_events m
             JOIN sessions s ON s.id = m.session_id
@@ -404,7 +336,7 @@ def search_memory(
 
 
 def read_memory(
-    connection: sqlite3.Connection,
+    connection: Any,
     namespace: str,
     *,
     policy: str = "active",
@@ -458,7 +390,7 @@ def read_memory(
 
 
 def get_memory(
-    connection: sqlite3.Connection,
+    connection: Any,
     namespace: str,
     key: str,
     *,
@@ -498,7 +430,7 @@ def get_memory(
 
 
 def quarantine_memory(
-    connection: sqlite3.Connection,
+    connection: Any,
     namespace: str,
     key: str | None = None,
     *,
@@ -532,7 +464,7 @@ def quarantine_memory(
 
 
 def delete_memory(
-    connection: sqlite3.Connection,
+    connection: Any,
     namespace: str,
     key: str | None = None,
     *,
@@ -566,7 +498,7 @@ def delete_memory(
 
 
 def reset_memory(
-    connection: sqlite3.Connection,
+    connection: Any,
     namespace: str,
     *,
     commit: bool = True,
@@ -588,7 +520,7 @@ def reset_memory(
 
 
 def expire_memory(
-    connection: sqlite3.Connection,
+    connection: Any,
     *,
     namespace: str | None = None,
     now: datetime | None = None,
@@ -624,7 +556,7 @@ def expire_memory(
 
 
 def list_memory_events(
-    connection: sqlite3.Connection,
+    connection: Any,
     *,
     session_id: str | None = None,
     namespace: str | None = None,
@@ -666,7 +598,6 @@ def list_memory_events(
 
 __all__ = [
     "delete_memory",
-    "ensure_document_index",
     "expire_memory",
     "get_memory",
     "list_memory_events",

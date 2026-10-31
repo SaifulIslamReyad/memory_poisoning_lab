@@ -82,10 +82,6 @@ class TestPagesReturnWithoutStreamlit(unittest.TestCase):
         with patch.object(pages, "_streamlit_available", return_value=False):
             pages.render_dashboard_page(experiment_ids=[])
 
-    def test_render_archive_page(self) -> None:
-        with patch.object(pages, "_streamlit_available", return_value=False):
-            pages.render_archive_page(archives=[])
-
 
 class TestChartsHelpers(unittest.TestCase):
     def test_phase_timeline_chart(self) -> None:
@@ -138,14 +134,6 @@ class TestChartsHelpers(unittest.TestCase):
 
 
 class TestAppFunctions(unittest.TestCase):
-    def test_ensure_databases_returns_paths(self) -> None:
-        from app import ensure_databases
-        models_db, lab_db = ensure_databases()
-        self.assertIsInstance(models_db, str)
-        self.assertIsInstance(lab_db, str)
-        self.assertTrue(models_db.endswith(".sqlite"))
-        self.assertTrue(lab_db.endswith(".sqlite"))
-
     def test_main_is_callable(self) -> None:
         import app as app_module
         self.assertTrue(callable(app_module.main))

@@ -1,10 +1,10 @@
 # Agentic AI Security Lab
 
-A local, desktop-style Streamlit application for **controlled defensive experiments on cross-session persistence of poisoned information in agentic AI memory**.
+A hosted Streamlit application for **controlled defensive experiments on cross-session persistence of poisoned information in agentic AI memory**.
 
-Compare Groq-compatible models, create isolated experiment sessions, inject marked test facts, probe whether those facts persist across sessions, apply mitigations, inspect evidence, and export a verifiable archive.
+Compare Groq-compatible models, create isolated experiment sessions, inject marked test facts, probe whether those facts persist across sessions, apply mitigations, and inspect evidence.
 
-> **Security**: This is a local test harness. It does not connect to production data, and it never stores an API key in the GUI, SQLite databases, logs, or archives.
+> **Security**: This lab uses a hosted PostgreSQL database and isolated per-experiment schemas. It never stores API keys in the GUI, database evidence, or logs.
 
 ---
 
@@ -17,17 +17,16 @@ Compare Groq-compatible models, create isolated experiment sessions, inject mark
 5. [Memory Panel](#memory-panel)
 6. [Poisoning Workflow](#poisoning-workflow)
 7. [Experiment Dashboard](#experiment-dashboard)
-8. [Archive](#archive)
-9. [Safety and Privacy](#safety-and-privacy)
-10. [Troubleshooting](#troubleshooting)
-11. [Technology Stack](#technology-stack)
-12. [Project Layout](#project-layout)
-13. [Architecture](#architecture)
-14. [Security Decisions](#security-decisions)
-15. [Running and Validating](#running-and-validating)
-16. [Extension Points](#extension-points)
-17. [Programmatic Usage](#programmatic-usage)
-18. [Neon PostgreSQL](#neon-postgresql)
+8. [Safety and Privacy](#safety-and-privacy)
+9. [Troubleshooting](#troubleshooting)
+10. [Technology Stack](#technology-stack)
+11. [Project Layout](#project-layout)
+12. [Architecture](#architecture)
+13. [Security Decisions](#security-decisions)
+14. [Running and Validating](#running-and-validating)
+15. [Extension Points](#extension-points)
+16. [Programmatic Usage](#programmatic-usage)
+17. [Neon PostgreSQL](#neon-postgresql)
 
 ---
 
@@ -40,27 +39,21 @@ Compare Groq-compatible models, create isolated experiment sessions, inject mark
    python3 -m pip install -r requirements.txt
    ```
 
-3. Create a local environment file:
-
-   ```bash
-   cp .env.example .env
-   ```
-
-4. Set your Groq key in `.env`:
+3. Configure the hosted secrets in your deployment provider:
 
    ```text
-   GROQ_API_KEY=your_api_key_here
+   DATABASE_URL=postgresql://user:password@host/database?sslmode=require
+   GROQ_API_KEY=your_groq_api_key_here
+   APP_PASSWORD=choose-a-long-random-password
    ```
 
-   `.env` is ignored by Git. Use a real key only on your own machine and rotate it if it has ever been committed or exposed.
-
-5. Start the application:
+4. Start the application:
 
    ```bash
    streamlit run app.py
    ```
 
-On first launch, the application initializes `data/models.sqlite` and `data/lab.sqlite`. If the model database is empty, it imports the bundled `all_models_in_grok.json` snapshot.
+On first launch, the application initializes the hosted PostgreSQL schema. If the model catalog is empty, it imports the bundled `all_models_in_grok.json` snapshot.
 
 ## Neon PostgreSQL
 
@@ -79,9 +72,7 @@ python3 -m pip install -r requirements.txt
 streamlit run app.py
 ```
 
-When `DATABASE_URL` is set, the agent SQL tool creates an isolated `sandbox_<experiment-id>` schema in Neon, loads the e-commerce fixture there, and executes only bounded read-only `SELECT`/`WITH` queries. The local SQLite files remain the default when `DATABASE_URL` is absent.
-
-Archives still include a portable SQLite snapshot of experiment evidence for compatibility. Neon sandbox data is additionally exported as `sandbox.json`. Keep the Neon URL and `GROQ_API_KEY` in deployment secrets; never commit them.
+The agent SQL tool creates an isolated `sandbox_<experiment-id>` schema in PostgreSQL, loads the e-commerce fixture there, and executes only bounded read-only `SELECT`/`WITH` queries. There is no local database fallback.
 
 Set `APP_PASSWORD` when hosting the app online. Local access remains open when this variable is unset, but a deployed security lab should configure it or use an external identity-aware proxy.
 
@@ -94,13 +85,12 @@ The sidebar contains four pages:
 - **Catalog** — model metadata and synchronization.
 - **Chat Console** — experiments, sessions, model calls, memory, and poisoning workflow.
 - **Dashboard** — comparison and safety metrics.
-- **Archive** — export, verification, and local review copies.
 
 ---
 
 ## Catalog
 
-Inspect and refresh model metadata stored in SQLite.
+Inspect and refresh model metadata stored in PostgreSQL.
 
 - **Update Model Database** fetches the Groq models endpoint using `GROQ_API_KEY`.
 - Search and filters find models by ID, active status, and input/output modalities.
@@ -134,7 +124,7 @@ The main experiment workspace.
 4. Choose a default mitigation strategy.
 5. Click **Create Experiment**.
 
-The experiment receives a stable ID and a run-level memory namespace. Title, hypothesis, notes, poison vector, mitigation choice, timestamps, and status are stored in `data/lab.sqlite`.
+The experiment receives a stable ID and a run-level memory namespace. Title, hypothesis, notes, poison vector, mitigation choice, timestamps, and status are stored in PostgreSQL.
 
 ### Create and reuse sessions
 
@@ -221,7 +211,7 @@ Manages the current session's memory namespace.
 
 Provenance choices: `explicit`, `trusted`, `untrusted`, `poison`, `tool`. Provenance is stored with every memory event so detection and mitigation logic can distinguish trusted facts from test inputs.
 
-The memory subsystem also supports conversation-summary memory, explicit key/value memory, retrieved-document memory, optional SQLite FTS5 search, and tool-result memory.
+The memory subsystem also supports conversation-summary memory, explicit key/value memory, PostgreSQL keyword search, and tool-result memory.
 
 ---
 
@@ -264,40 +254,9 @@ Select an experiment to inspect sessions and phase distribution. Charts and raw 
 
 ---
 
-## Archive
+## Exporting Evidence
 
-Portable, hash-verifiable experiment records.
-
-### Export
-
-1. Select an experiment under **Archive Operations**.
-2. Click **Create Archive**.
-3. The archive is written under `data/archives/`.
-
-Each archive contains:
-
-```text
-<experiment-id>/
-├── experiment.sqlite
-├── requests.jsonl
-├── responses.jsonl
-├── memory.jsonl
-├── detections.jsonl
-├── mitigations.jsonl
-├── sandbox.sqlite
-├── manifest.json
-└── schema.sql
-```
-
-The manifest records experiment/session IDs, model and request configuration, timestamps, file sizes, SHA-256 hashes, schema version, software metadata, and an explicit note that credentials are excluded.
-
-### Verify and review
-
-- **Verify Archive** checks every manifest hash and reports tampering or missing files.
-- **Create Review Copy** verifies first, then creates an isolated copy under `data/archives/reviews/`.
-- Archive search filters by model, poison vector, mitigation strategy, and date.
-
-Archives contain a disposable sandbox database snapshot, not the original `ecommerce.db` fixture.
+The hosted version keeps experiment evidence in PostgreSQL. For durable exports, use PostgreSQL backups or add an object-storage exporter such as Supabase Storage; the removed local archive implementation is intentionally not used because hosted app filesystems are ephemeral.
 
 ---
 
@@ -305,8 +264,8 @@ Archives contain a disposable sandbox database snapshot, not the original `ecomm
 
 Defensive boundaries:
 
-- The e-commerce fixture remains untouched; each experiment receives a copied sandbox database.
-- Agent SQL tools use read-only SQLite mode, a SQLite authorizer, query limits, row limits, result-size limits, and a step budget.
+- Each experiment receives an isolated PostgreSQL sandbox schema populated from the tracked fixture SQL.
+- Agent SQL tools use a read-only PostgreSQL connection, schema validation, query timeouts, row limits, and result-size limits.
 - Multiple SQL statements and write-capable statements are rejected.
 - API requests and long-running work execute in background workers.
 - User input, notes, worker errors, request/response evidence, memory values, and archive database copies pass through credential redaction.
@@ -319,7 +278,7 @@ Defensive boundaries:
 
 ### No models are visible
 
-- Confirm `data/models.sqlite` initialized successfully.
+- Confirm `DATABASE_URL` is configured and the database user can create the application schema.
 - Open **Catalog** and click **Update Model Database**.
 - Confirm `GROQ_API_KEY` is in `.env` and the machine has network access.
 
@@ -339,10 +298,6 @@ The selected model does not advertise the relevant feature or sampling parameter
 
 The query must be a single read-only `SELECT`. Remove semicolons, write statements, multiple statements, and unsupported functions. Results are also limited by row, byte, and step limits.
 
-### Archive verification fails
-
-Do not edit archive files. Re-export the experiment or investigate the reported missing or changed file.
-
 ---
 
 ## Technology Stack
@@ -352,10 +307,10 @@ Do not edit archive files. Re-export the experiment or investigate the reported 
 | Interface       | `streamlit`                       | Pages, forms, chat UI, tables, expanders, downloads, background-job status |
 | Model API       | `openai`                          | OpenAI-compatible chat-completions client pointed at Groq                  |
 | Catalog sync    | `requests`                        | HTTPS request to the Groq models endpoint                                  |
-| Environment     | `python-dotenv`                   | Loads `GROQ_API_KEY` and local limits from `.env`                          |
-| Persistence     | Python `sqlite3`                  | Model catalog, lab records, sandbox copies, archive databases              |
-| Serialization   | `json` helpers (`core/config.py`) | Stable JSON evidence and archive manifests                                 |
-| Integrity       | `hashlib` / SHA-256               | Memory snapshots and archive file verification                             |
+| Environment     | `python-dotenv`                   | Loads hosted secrets and request limits from deployment settings           |
+| Persistence     | `psycopg`                         | Model catalog, lab records, and experiment sandbox schemas                 |
+| Serialization   | `json` helpers (`core/config.py`) | Stable JSON evidence                                                       |
+| Integrity       | `hashlib` / SHA-256               | Memory snapshot verification                                               |
 | Tests           | `pytest` and `unittest`           | Temporary-database integration tests and unit tests                        |
 | Optional charts | `plotly`                          | Optional visualization helpers; Streamlit tables/charts work without it    |
 
@@ -379,28 +334,25 @@ pytest>=7.4.0
 ├── app.py                            # Streamlit entry point and database bootstrap
 ├── core/
 │   ├── agent.py                      # Provider adapter, request validation, tools, evidence
-│   ├── archive.py                    # Export, SHA-256 verification, review copies
 │   ├── catalog.py                    # Groq catalog normalization and synchronization
 │   ├── config.py                     # Environment configuration and redaction
-│   ├── database.py                   # SQLite connections, schemas, migrations
+│   ├── database.py                   # PostgreSQL connections, schemas, migrations
 │   ├── detections.py                 # Canary/provenance/contradiction detectors
 │   ├── experiments.py                # Experiment, session, and turn persistence
-│   ├── memory.py                     # Memory policies, provenance, FTS5, snapshots
+│   ├── memory.py                     # Memory policies, provenance, search, snapshots
 │   ├── metrics.py                    # Metric recording and summaries
 │   ├── mitigations.py                # Quarantine, delete, reset, TTL, policy mitigations
 │   ├── models.py                     # Capability model and request validation
-│   ├── tools.py                      # Safe read-only SQLite target executor
+│   ├── tools.py                      # Safe read-only PostgreSQL sandbox executor
 │   └── workers.py                    # Background job queue
 ├── gui/
-│   ├── pages.py                      # Catalog, chat, dashboard, and archive renderers
+│   ├── pages.py                      # Catalog, chat, and dashboard renderers
 │   ├── components.py                 # Optional Streamlit UI helpers
 │   └── charts.py                     # Optional chart helpers
 ├── fixtures/                         # Disposable e-commerce schema and seed data
-├── tests/                            # Unit and temporary-SQLite integration tests
-├── data/                             # Runtime SQLite databases, sandboxes, archives
+├── tests/                            # Unit and hosted database integration tests
 ├── .env.example                      # Safe configuration template
 ├── all_models_in_grok.json           # Bundled model snapshot
-├── ecommerce.db                      # Pre-built fixture database
 └── requirements.txt
 ```
 
@@ -412,8 +364,9 @@ The older `rag.py`, `rag_but_all_models_replies.py`, `same_session_chat.py`, and
 
 ### 1. Configuration and credential boundary
 
-`core/config.py` reads local environment settings:
+`core/config.py` reads hosted environment settings:
 
+- `DATABASE_URL`
 - `GROQ_API_KEY`
 - `GROQ_BASE_URL`
 - `GROQ_REQUEST_TIMEOUT`
@@ -423,14 +376,14 @@ The older `rag.py`, `rag_but_all_models_replies.py`, `same_session_chat.py`, and
 
 The redaction layer handles common credential forms: API keys, authorization headers, tokens, passwords, secrets, camel-case keys, and Groq/OpenAI-style key prefixes (`sk_`, `gsk_`). Redaction is applied before evidence is stored, displayed, or copied into an archive. The provider request itself is kept separate from the redacted evidence request.
 
-### 2. SQLite schema and migrations
+### 2. PostgreSQL schema and migrations
 
-`core/database.py` creates two databases:
+`core/database.py` initializes one hosted PostgreSQL database:
 
-- **`models.sqlite`** — normalized Groq metadata plus the original raw model JSON.
-- **`lab.sqlite`** — experiments, sessions, turns, memory events, detections, mitigations, metrics, and archive records.
+- **Model tables** — normalized Groq metadata plus the original raw model JSON.
+- **Lab tables** — experiments, sessions, turns, memory events, detections, mitigations, and metrics.
 
-Foreign keys, busy timeouts, row factories, schema migration records, and indexes are enabled during initialization. Each experiment uses a copied fixture database under `data/sandbox/`; the original `ecommerce.db` is never modified.
+Foreign keys, statement timeouts, row factories, schema migration records, and indexes are enabled during initialization. Each experiment uses an isolated PostgreSQL schema seeded from the tracked fixture SQL.
 
 #### Lab database tables
 
@@ -443,24 +396,18 @@ Foreign keys, busy timeouts, row factories, schema migration records, and indexe
 | `detections`        | Compromise detection signals: detector name, signal, score, label, explanation                         |
 | `mitigations`       | Defense actions: strategy, before/after memory hashes, result                                          |
 | `metrics`           | Quantitative measurements: latency, tokens, cost, error counts                                         |
-| `archives`          | Exported archive records: path, manifest hash, size, status                                            |
 | `schema_migrations` | Schema version tracking for migrations                                                                 |
 
-#### Data directory layout
+#### Hosted fixture layout
 
-| Path                            | Contents                                                                     |
-| ------------------------------- | ---------------------------------------------------------------------------- |
-| `data/models.sqlite`            | Model catalog database                                                       |
-| `data/lab.sqlite`               | Lab experiment database                                                      |
-| `data/sandbox/`                 | Per-experiment read-only sandbox SQLite databases (copies of `ecommerce.db`) |
-| `data/archives/`                | Exported experiment archives and review copies                               |
-| `fixtures/ecommerce_schema.sql` | E-commerce fixture schema (18 tables)                                        |
-| `fixtures/ecommerce_seed.sql`   | E-commerce fixture seed data                                                 |
-| `ecommerce.db`                  | Pre-built fixture database (never modified at runtime)                       |
+| Path                            | Contents                              |
+| ------------------------------- | ------------------------------------- |
+| `fixtures/ecommerce_schema.sql` | E-commerce fixture schema (18 tables) |
+| `fixtures/ecommerce_seed.sql`   | E-commerce fixture seed data          |
 
 ### 3. Model catalog
 
-`core/catalog.py` normalizes model fields into queryable child tables: modalities, pricing, features, sampling parameters, and raw JSON fallback. The bundled snapshot is imported through the same upsert path used by live sync. Live sync fetches the Groq endpoint with `requests`, validates the response, and replaces child metadata atomically in a SQLite transaction.
+`core/catalog.py` normalizes model fields into queryable child tables: modalities, pricing, features, sampling parameters, and raw JSON fallback. The bundled snapshot is imported through the same upsert path used by live sync. Live sync fetches the Groq endpoint with `requests`, validates the response, and replaces child metadata atomically in PostgreSQL.
 
 `core/models.py` converts catalog metadata into `ModelCapabilities` and validates request parameters before an API call — enforcing model limits and rejecting invalid JSON Schema, tool definitions, structured-output combinations, reasoning controls, and unsupported parameters.
 
@@ -502,7 +449,7 @@ The OpenAI SDK response is normalized so the same adapter works with dictionary 
 - Trusted, untrusted, active, and all-memory policies
 - Provenance categorization
 - Expiration, quarantine, deletion, reset, and snapshot hashing
-- Optional SQLite FTS5 indexing and search
+- PostgreSQL-compatible keyword search
 
 The GUI marks poison entries with `poison:lab_canary` provenance. `core/detections.py` checks canary matches, provenance, contradiction signals, confidence/recency, and unexpected writes across the shared namespace.
 
@@ -524,19 +471,19 @@ Every mitigation records before/after memory hashes, affected event count, times
 `core/tools.py` is the enforcement layer for agent SQL access:
 
 - The sandbox is opened in read-only URI mode.
-- A SQLite authorizer denies write, transaction, attach, pragma, and schema-mutation actions.
-- Dangerous functions (`load_extension`, `sqlite_exec`) are denied.
+- A separate read-only PostgreSQL connection executes sandbox queries.
+- SQL is parsed, restricted to one `SELECT`/`WITH` statement, schema-checked, and bounded by timeout, row, and result-size limits.
 - Internal semicolons are rejected.
 - Row count, result bytes, and VM steps are limited.
 - Only statements returning a cursor description are accepted.
 
 This is intentionally stronger than the old substring-based SQL filter.
 
-### 9. Dashboard and archives
+### 9. Dashboard and hosted evidence
 
 `core/metrics.py` calculates session, persistence, contamination, detection, mitigation, latency, token, cost, and error summaries. The GUI renders these as cards, tables, timelines, and drill-down views.
 
-`core/archive.py` exports a filtered experiment database and JSONL evidence files, creates a manifest, hashes every file with SHA-256, and records the archive in SQLite. Verification checks paths, sizes, and hashes. Import creates an isolated review copy only after verification succeeds.
+Dashboard metrics and evidence remain in PostgreSQL. Durable exports should use PostgreSQL backups or Supabase Storage; the application does not depend on ephemeral container files.
 
 ---
 
@@ -570,7 +517,7 @@ python3 -m unittest discover -s tests -v
 python3 -m pytest -q
 ```
 
-The test suite uses temporary SQLite databases and does not require a live Groq API key. Tests cover catalog behavior, memory isolation, request validation, agent evidence separation, mitigation behavior, SQL safety, archive integrity, and GUI import-time behavior.
+The test suite covers catalog behavior, memory isolation, request validation, agent evidence separation, mitigation behavior, SQL safety, and GUI import-time behavior. Hosted integration tests should run against a disposable PostgreSQL/Supabase project.
 
 ---
 
@@ -736,11 +683,3 @@ assert before_hash != after_hash
 Available mitigation strategies are `quarantine`, `delete`, `reset`,
 `trusted_sources_only`, `require_confirmation`, and `ttl`. Each mitigation
 records affected entries and before/after memory hashes.
-
-```python
-from core.archive import create_review_copy, export_archive, verify_archive
-
-archive_path = export_archive(config, experiment_id)
-verify_archive(config, archive_path)
-review_path = create_review_copy(config, archive_path)
-```

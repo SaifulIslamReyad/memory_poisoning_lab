@@ -160,20 +160,10 @@ class LabConfig:
 
     # Root directory of the project (used for default paths)
     base_dir: Path = _PROJECT_ROOT
-    # Path to the models catalog SQLite database
-    models_db: Path = _PROJECT_ROOT / "data" / "models.sqlite"
-    # Path to the lab experiment SQLite database (stores all experiment evidence)
-    lab_db: Path = _PROJECT_ROOT / "data" / "lab.sqlite"
-    # Directory for exported experiment archives
-    archives_dir: Path = _PROJECT_ROOT / "data" / "archives"
-    # Directory for per-experiment sandbox databases (copy of fixture, read-only)
-    sandbox_dir: Path = _PROJECT_ROOT / "data" / "sandbox"
-    # Path to the e-commerce fixture database (source of truth, never modified by runtime)
-    fixture_db: Path = _PROJECT_ROOT / "data" / "ecommerce.db"
-    # Path to the bundled model snapshot JSON file (imported when models DB is empty)
+    # Path to the bundled model snapshot JSON file used to seed hosted PostgreSQL
     model_snapshot: Path = _PROJECT_ROOT / "all_models_in_grok.json"
-    # Optional Neon/PostgreSQL connection URL. When set, it replaces both SQLite stores.
-    database_url: str | None = None
+    # Required hosted PostgreSQL/Supabase connection URL.
+    database_url: str = ""
     # Base URL for the Groq-compatible API
     groq_base_url: str = "https://api.groq.com/openai/v1"
     # Timeout for API requests (seconds)
@@ -182,7 +172,7 @@ class LabConfig:
     max_rows: int = 100
     # Maximum total byte size of SQL tool results
     max_result_bytes: int = 1024 * 1024
-    # Maximum SQLite VM steps for SQL tool queries (prevents runaway queries)
+    # Maximum query steps retained for deployment compatibility
     max_query_steps: int = 100000
 
     @property
@@ -200,24 +190,18 @@ class LabConfig:
         return key
 
     def ensure_directories(self) -> None:
-        """Create all required directories if they don't already exist."""
-        for path in (
-            self.models_db.parent,
-            self.lab_db.parent,
-            self.archives_dir,
-            self.sandbox_dir,
-        ):
-            path.mkdir(parents=True, exist_ok=True)
+        """Retained for compatibility; hosted mode does not create local storage."""
+        return None
 
     @property
     def database_target(self) -> str | Path:
         """Return the configured shared database target for repositories."""
-        return self.database_url or self.lab_db
+        return self.database_url
 
     @property
     def models_target(self) -> str | Path:
         """Return the configured model-catalog database target."""
-        return self.database_url or self.models_db
+        return self.database_url
 
 
 def load_config(base_dir: str | Path | None = None) -> LabConfig:
@@ -232,17 +216,11 @@ def load_config(base_dir: str | Path | None = None) -> LabConfig:
 
     # Resolve the root directory: explicit base_dir if provided, otherwise project root
     root = Path(base_dir).expanduser().resolve() if base_dir else _PROJECT_ROOT
-    data_dir = root / "data"
     # Build the config, overriding defaults from environment variables where set
     config = LabConfig(
         base_dir=root,
-        models_db=data_dir / "models.sqlite",
-        lab_db=data_dir / "lab.sqlite",
-        archives_dir=data_dir / "archives",
-        sandbox_dir=data_dir / "sandbox",
-        fixture_db=data_dir / "ecommerce.db",
         model_snapshot=root / "all_models_in_grok.json",
-        database_url=os.getenv("DATABASE_URL") or None,
+        database_url=os.getenv("DATABASE_URL", "").strip(),
         # Allow overriding the Groq API URL via environment variable
         groq_base_url=os.getenv("GROQ_BASE_URL") or "https://api.groq.com/openai/v1",
         # Allow overriding request timeout via environment variable (default 30s)

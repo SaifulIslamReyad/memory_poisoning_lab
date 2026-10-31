@@ -47,7 +47,7 @@ def _require_access(st: object) -> None:
 
 
 def ensure_databases() -> tuple[str, str]:
-    """Initialize models and lab databases; import snapshot when models empty."""
+    """Initialize hosted PostgreSQL schemas and seed the model catalog."""
     # Import catalog functions for listing models and importing snapshots
     from core.catalog import import_model_snapshot, list_models
 
@@ -59,9 +59,13 @@ def ensure_databases() -> tuple[str, str]:
 
     # Load the application configuration (paths, settings, etc.)
     config = load_config()
-    # Get paths to the models and lab databases from config
-    models_db = config.models_target
-    lab_db = config.database_target
+    if not config.database_url:
+        raise RuntimeError(
+            "DATABASE_URL is required. Configure the hosted PostgreSQL/Supabase "
+            "connection string before starting the application."
+        )
+    models_db = config.database_url
+    lab_db = config.database_url
 
     # Initialize (create schema for) the models database; returns a live connection
     models_connection = initialize_models_db(models_db)
@@ -95,9 +99,6 @@ def main() -> None:
     # Import Streamlit now that we know it's available
     import streamlit as st
 
-    # Import archive listing function for the Archive page
-    from core.archive import list_archives
-
     # Import catalog functions for model listing and stats
     from core.catalog import catalog_stats, list_models
 
@@ -105,7 +106,7 @@ def main() -> None:
     from core.config import load_config
 
     # Import the SQLite connection helper
-    from core.database import connect_sqlite
+    from core.database import connect_database
 
     # Import experiment listing function
     from core.experiments import list_experiments
@@ -114,7 +115,7 @@ def main() -> None:
     st.set_page_config(page_title="Agentic AI Security Lab", layout="wide")
     _require_access(st)
 
-    # Ensure both databases are initialized and get their paths
+    # Ensure the hosted database is initialized and get its connection target
     models_db, lab_db = ensure_databases()
 
     # Render the sidebar navigation with the app title and page options
@@ -122,7 +123,7 @@ def main() -> None:
     # The radio buttons determine which page to show; default is the first option
     page = st.sidebar.radio(
         "Navigate",
-        ["Catalog", "Chat Console", "Dashboard", "Archive"],
+        ["Catalog", "Chat Console", "Dashboard"],
     )
 
     # Load configuration (provides API keys, paths, and settings)
@@ -148,7 +149,7 @@ def main() -> None:
         from gui.pages import render_chat_page
 
         # Open a read-only connection to the lab database
-        lab_connection = connect_sqlite(lab_db, readonly=True)
+        lab_connection = connect_database(lab_db, readonly=True)
         try:
             # Fetch all experiment IDs to populate the chat page's experiment selector
             experiment_ids = [exp["id"] for exp in list_experiments(lab_connection)]
@@ -163,7 +164,7 @@ def main() -> None:
         from gui.pages import render_dashboard_page
 
         # Open a read-only connection to the lab database
-        lab_connection = connect_sqlite(lab_db, readonly=True)
+        lab_connection = connect_database(lab_db, readonly=True)
         try:
             # Fetch all experiment IDs
             experiment_ids = [exp["id"] for exp in list_experiments(lab_connection)]
@@ -188,15 +189,6 @@ def main() -> None:
             experiment_ids=experiment_ids,
             experiment_summaries=experiment_summaries,
         )
-
-    elif page == "Archive":
-        # Render the archive management page
-        from gui.pages import render_archive_page
-
-        # Fetch all archived experiments from the lab database
-        archives = list_archives(config)
-        # Render the archive page with the list of archives
-        render_archive_page(archives=archives)
 
 
 if __name__ == "__main__":

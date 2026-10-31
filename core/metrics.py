@@ -9,14 +9,13 @@ and cost metrics.
 from __future__ import annotations
 
 import json
-import sqlite3
 from typing import Any
 
 from .config import json_dumps, new_id, utc_now    # json_dumps safely serializes to JSON; new_id generates prefixed IDs; utc_now gives normalized timestamp
 
 
 def record_metric(
-    connection: sqlite3.Connection,
+    connection: Any,
     experiment_id: str,
     name: str,
     value: float,
@@ -62,7 +61,7 @@ def record_metric(
 
 
 def summarize_experiment(
-    connection: sqlite3.Connection,
+    connection: Any,
     experiment_id: str,
 ) -> dict[str, Any]:
     """Compute persistence, safety, quality, latency, cost, and error metrics.
@@ -201,7 +200,7 @@ def summarize_experiment(
     }
 
 
-def list_metric_names(connection: sqlite3.Connection) -> list[str]:
+def list_metric_names(connection: Any) -> list[str]:
     """Return the set of distinct metric names recorded across all experiments."""
     rows = connection.execute(
         "SELECT DISTINCT name FROM metrics ORDER BY name"

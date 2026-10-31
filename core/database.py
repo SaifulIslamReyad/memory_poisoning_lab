@@ -1,10 +1,8 @@
-"""Database connections, schemas, and migrations for SQLite or PostgreSQL."""
+"""Hosted PostgreSQL connections, schemas, and migrations."""
 
 from __future__ import annotations
 
-import sqlite3
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any, Iterator
 
 # Schema version for the models catalog database
@@ -17,7 +15,7 @@ LAB_MIGRATIONS: dict[int, str] = {}
 
 
 class _PostgresRow(dict):
-    """Mapping row that also preserves SQLite-style numeric indexing."""
+    """Mapping row that also preserves numeric indexing for legacy callers."""
 
     def __getitem__(self, key: Any) -> Any:
         if isinstance(key, int):
@@ -108,17 +106,6 @@ class PostgresConnection:
         return self._connection.info.transaction_status != 0
 
 
-def _is_postgres_target(target: str | Path) -> bool:
-    return isinstance(target, str) and target.lower().startswith(
-        ("postgresql://", "postgres://")
-    )
-
-
-def is_postgres_target(target: str | Path) -> bool:
-    """Return whether a database target is a PostgreSQL connection URL."""
-    return _is_postgres_target(target)
-
-
 # --- Models Catalog Schema ---
 # Stores normalized Groq model metadata with child tables for modalities, pricing,
 # features, and sampling parameters. The raw API response is preserved in raw_json.
@@ -177,7 +164,7 @@ CREATE INDEX IF NOT EXISTS idx_model_modalities_modality
 
 # --- Lab Experiment Schema ---
 # Stores all experiment evidence: experiments, sessions, turns, memory events,
-# detections, mitigations, metrics, and archive records.
+# detections, mitigations, and metrics.
 LAB_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
     name TEXT PRIMARY KEY,
@@ -299,17 +286,6 @@ CREATE TABLE IF NOT EXISTS metrics (
     FOREIGN KEY (turn_id) REFERENCES turns(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS archives (
-    id TEXT PRIMARY KEY,
-    experiment_id TEXT NOT NULL,
-    path TEXT NOT NULL,
-    manifest_hash TEXT,
-    size_bytes INTEGER,
-    created_at TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'created',
-    FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE CASCADE
-);
-
 CREATE INDEX IF NOT EXISTS idx_sessions_experiment ON sessions(experiment_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_namespace ON sessions(memory_namespace);
 CREATE INDEX IF NOT EXISTS idx_turns_session_sequence ON turns(session_id, sequence);
@@ -320,46 +296,25 @@ CREATE INDEX IF NOT EXISTS idx_memory_namespace
 CREATE INDEX IF NOT EXISTS idx_detections_turn ON detections(turn_id);
 CREATE INDEX IF NOT EXISTS idx_mitigations_experiment ON mitigations(experiment_id);
 CREATE INDEX IF NOT EXISTS idx_metrics_experiment ON metrics(experiment_id);
-CREATE INDEX IF NOT EXISTS idx_archives_experiment ON archives(experiment_id);
 """
 
 
-def connect_sqlite(
-    path: str | Path,
+def connect_database(
+    database_url: str,
     *,
     readonly: bool = False,
     timeout: float = 30.0,
-) -> Any:
-    """Open a configured SQLite or PostgreSQL connection.
-
-    A PostgreSQL URL is routed to the Neon-compatible adapter. The historical
-    function name is retained so existing repositories remain compatible.
-    """
-    if _is_postgres_target(path):
-        return PostgresConnection(str(path), readonly=readonly, timeout=timeout)
-    # Resolve the path to an absolute path
-    database_path = Path(path).expanduser().resolve()
-    if readonly:
-        # For read-only access, use a URI connection in read-only mode
-        if not database_path.exists():
-            raise FileNotFoundError(database_path)
-        uri = f"file:{database_path}?mode=ro"
-        connection = sqlite3.connect(uri, uri=True, timeout=timeout)
-    else:
-        # For read-write access, create parent directories if needed
-        database_path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(database_path, timeout=timeout)
-    # Use Row factory for dict-like access to rows by column name
-    connection.row_factory = sqlite3.Row
-    # Enable foreign key enforcement (required for cascade deletes to work)
-    connection.execute("PRAGMA foreign_keys = ON")
-    # Set busy timeout to wait (up to timeout seconds) instead of immediately erroring on locks
-    connection.execute(f"PRAGMA busy_timeout = {max(1, int(timeout * 1000))}")
-    return connection
+) -> PostgresConnection:
+    """Open the hosted PostgreSQL database connection."""
+    if not isinstance(database_url, str) or not database_url.startswith(
+        ("postgresql://", "postgres://")
+    ):
+        raise ValueError("DATABASE_URL must be a PostgreSQL connection string")
+    return PostgresConnection(database_url, readonly=readonly, timeout=timeout)
 
 
 @contextmanager
-def transaction(connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+def transaction(connection: Any) -> Iterator[Any]:
     """Yield a connection inside a commit/rollback transaction."""
     try:
         # Begin a transaction
@@ -374,7 +329,7 @@ def transaction(connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
 
 
 def _apply_schema(
-    connection: sqlite3.Connection,
+    connection: Any,
     schema: str,
     name: str,
     version: int,
@@ -407,20 +362,13 @@ def _apply_schema(
     # If starting fresh (version 0), apply the full schema
     if current == 0:
         connection.executescript(schema)
-        applied_at = (
-            "CURRENT_TIMESTAMP"
-            if getattr(connection, "is_postgres", False)
-            else "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
-        )
         connection.execute(
-            f"""
+            """
             INSERT INTO schema_migrations(name, version, applied_at)
-            VALUES (?, ?, {applied_at})
+            VALUES (?, ?, CURRENT_TIMESTAMP)
             """,
             (name, version),
         )
-        if not getattr(connection, "is_postgres", False):
-            connection.execute(f"PRAGMA user_version = {version}")
         connection.commit()
         return
     # Otherwise, apply migrations incrementally from current+1 to target version
@@ -431,40 +379,26 @@ def _apply_schema(
                 f"no migration registered for {name} version {migration_version}"
             )
         connection.executescript(migration)
-        applied_at = (
-            "CURRENT_TIMESTAMP"
-            if getattr(connection, "is_postgres", False)
-            else "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
-        )
         connection.execute(
-            f"""
+            """
             INSERT INTO schema_migrations(name, version, applied_at)
-            VALUES (?, ?, {applied_at})
+            VALUES (?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(name) DO UPDATE SET
                 version = excluded.version,
                 applied_at = excluded.applied_at
             """,
             (name, migration_version),
         )
-        if not getattr(connection, "is_postgres", False):
-            connection.execute(f"PRAGMA user_version = {migration_version}")
         connection.commit()
 
 
 def initialize_models_db(
-    path: str | Path,
+    database_url: str,
     *,
     version: int = MODEL_SCHEMA_VERSION,
-) -> Any:
+) -> PostgresConnection:
     """Initialize the models catalog database and return an open connection."""
-    # Resolve the path and ensure parent directory exists
-    database_path = (
-        path if _is_postgres_target(path) else Path(path).expanduser().resolve()
-    )
-    if not _is_postgres_target(path):
-        database_path.parent.mkdir(parents=True, exist_ok=True)
-    # Open/create the database file
-    connection = connect_sqlite(database_path)
+    connection = connect_database(database_url)
     # Ensure schema_migrations table exists in this database
     connection.execute("""
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -479,42 +413,35 @@ def initialize_models_db(
 
 
 def initialize_lab_db(
-    path: str | Path,
+    database_url: str,
     *,
     version: int = LAB_SCHEMA_VERSION,
-) -> Any:
+) -> PostgresConnection:
     """Initialize the lab experiment database and return an open connection."""
-    # Resolve the path and ensure parent directory exists
-    database_path = (
-        path if _is_postgres_target(path) else Path(path).expanduser().resolve()
-    )
-    if not _is_postgres_target(path):
-        database_path.parent.mkdir(parents=True, exist_ok=True)
-    # Open/create the database file
-    connection = connect_sqlite(database_path)
+    connection = connect_database(database_url)
     # Apply the lab schema (creates all evidence tables)
     _apply_schema(connection, LAB_SCHEMA, "lab", version, LAB_MIGRATIONS)
     return connection
 
 
-def initialize_databases(models_path: str | Path, lab_path: str | Path):
+def initialize_databases(database_url: str):
     """Initialize both application databases and return their connections."""
     # Initialize models DB and lab DB, returning both open connections
-    return initialize_models_db(models_path), initialize_lab_db(lab_path)
+    return initialize_models_db(database_url), initialize_lab_db(database_url)
 
 
 def schema_sql() -> str:
-    """Return the complete lab schema for archives and diagnostics."""
+    """Return the complete hosted lab schema for diagnostics."""
     return LAB_SCHEMA
 
 
-def row_to_dict(row: sqlite3.Row | None) -> dict | None:
-    """Convert a SQLite Row to a dict, or return None if input is None."""
+def row_to_dict(row: Any | None) -> dict | None:
+    """Convert a database row to a dict, or return None if input is None."""
     return dict(row) if row is not None else None
 
 
-def rows_to_dicts(rows: list[sqlite3.Row]) -> list[dict]:
-    """Convert a list of SQLite Rows to a list of dicts."""
+def rows_to_dicts(rows: list[Any]) -> list[dict]:
+    """Convert database rows to dictionaries."""
     return [dict(row) for row in rows]
 
 
@@ -523,8 +450,7 @@ __all__ = [
     "LAB_SCHEMA_VERSION",
     "MODEL_SCHEMA",
     "MODEL_SCHEMA_VERSION",
-    "connect_sqlite",
-    "is_postgres_target",
+    "connect_database",
     "initialize_databases",
     "initialize_lab_db",
     "initialize_models_db",

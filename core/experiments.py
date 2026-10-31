@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from typing import Any
 
 # Import utility functions for ID generation, JSON serialization, redaction, and timestamps
@@ -17,12 +16,12 @@ ROLES = {"system", "user", "assistant", "tool"}
 
 
 def create_experiment(
-    connection: sqlite3.Connection,
+    connection: Any,
     title: str,
     *,
     hypothesis: str | None = None,
     model_id: str | None = None,
-    memory_backend: str = "sqlite",
+    memory_backend: str = "postgresql",
     poison_vector: str | None = None,
     mitigation_strategy: str | None = None,
     notes: str | None = None,
@@ -61,7 +60,7 @@ def create_experiment(
 
 
 def create_session(
-    connection: sqlite3.Connection,
+    connection: Any,
     experiment_id: str,
     *,
     session_key: str | None = None,
@@ -105,7 +104,7 @@ def create_session(
 
 
 def append_turn(
-    connection: sqlite3.Connection,
+    connection: Any,
     session_id: str,
     *,
     role: str,
@@ -187,7 +186,7 @@ def append_turn(
 
 
 def get_experiment(
-    connection: sqlite3.Connection, experiment_id: str
+    connection: Any, experiment_id: str
 ) -> dict[str, Any] | None:
     """Fetch a single experiment by ID, or None if not found."""
     row = connection.execute(
@@ -197,7 +196,7 @@ def get_experiment(
 
 
 def list_experiments(
-    connection: sqlite3.Connection,
+    connection: Any,
     *,
     status: str | None = None,
     model_id: str | None = None,
@@ -240,7 +239,7 @@ def list_experiments(
 
 
 def get_session(
-    connection: sqlite3.Connection, session_id: str
+    connection: Any, session_id: str
 ) -> dict[str, Any] | None:
     """Fetch a single session by ID, or None if not found."""
     row = connection.execute(
@@ -250,7 +249,7 @@ def get_session(
 
 
 def list_sessions(
-    connection: sqlite3.Connection,
+    connection: Any,
     experiment_id: str | None = None,
     *,
     phase: str | None = None,
@@ -279,7 +278,7 @@ def list_sessions(
     return result
 
 
-def get_turn(connection: sqlite3.Connection, turn_id: str) -> dict[str, Any] | None:
+def get_turn(connection: Any, turn_id: str) -> dict[str, Any] | None:
     """Fetch a single turn by ID, with JSON fields decoded, or None if not found."""
     row = connection.execute("SELECT * FROM turns WHERE id = ?", (turn_id,)).fetchone()
     if row is None:
@@ -302,7 +301,7 @@ def get_turn(connection: sqlite3.Connection, turn_id: str) -> dict[str, Any] | N
 
 
 def get_turns(
-    connection: sqlite3.Connection,
+    connection: Any,
     session_id: str | None = None,
     *,
     experiment_id: str | None = None,
@@ -331,7 +330,7 @@ def get_turns(
 
 
 def get_session_messages(
-    connection: sqlite3.Connection, session_id: str
+    connection: Any, session_id: str
 ) -> list[dict[str, str]]:
     """Return the conversation messages for a session (system/user/assistant roles only)."""
     rows = connection.execute(
@@ -342,7 +341,7 @@ def get_session_messages(
 
 
 def transition_session(
-    connection: sqlite3.Connection,
+    connection: Any,
     session_id: str,
     phase: str,
     *,
@@ -372,7 +371,7 @@ def transition_session(
 
 
 def update_experiment_status(
-    connection: sqlite3.Connection,
+    connection: Any,
     experiment_id: str,
     status: str,
     *,
@@ -409,7 +408,7 @@ def update_experiment_status(
 
 
 def finish_experiment(
-    connection: sqlite3.Connection,
+    connection: Any,
     experiment_id: str,
     *,
     status: str = "completed",
@@ -419,7 +418,7 @@ def finish_experiment(
 
 
 def delete_session(
-    connection: sqlite3.Connection,
+    connection: Any,
     session_id: str,
     *,
     commit: bool = True,
@@ -439,7 +438,7 @@ def delete_session(
 
 
 def delete_experiment(
-    connection: sqlite3.Connection,
+    connection: Any,
     experiment_id: str,
     *,
     commit: bool = True,
@@ -460,7 +459,7 @@ def delete_experiment(
     return True
 
 
-def _decode_turn(row: sqlite3.Row) -> dict[str, Any]:
+def _decode_turn(row: Any) -> dict[str, Any]:
     """Decode JSON columns in a turn row back to Python objects."""
     item = dict(row)
     for field in (

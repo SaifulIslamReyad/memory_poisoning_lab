@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 
@@ -18,10 +17,10 @@ def _streamlit_available() -> bool:
 
 def _get_lab_connection(config: Any | None = None, *, readonly: bool = False):
     from core.config import load_config
-    from core.database import connect_sqlite
+    from core.database import connect_database
 
     cfg = config or load_config()
-    return connect_sqlite(cfg.database_target, readonly=readonly)
+    return connect_database(cfg.database_target, readonly=readonly)
 
 
 def _get_model_capabilities(models: list[dict[str, Any]], model_id: str | None):
@@ -79,16 +78,11 @@ def _run_chat_turn(
     phase: str,
     tool_names: list[str] | None,
     tool_definitions: list[dict[str, Any]] | None,
-    sandbox_path: Path,
 ) -> dict[str, Any]:
     """Run one model turn in a background worker."""
     from core.agent import AgentRunner
 
-    runner = AgentRunner(
-        config=config,
-        system_prompt=system_prompt,
-        sandbox_path=str(sandbox_path),
-    )
+    runner = AgentRunner(config=config, system_prompt=system_prompt)
     return runner.run_turn(
         experiment_id=experiment_id,
         session_id=session_id,
@@ -378,7 +372,6 @@ def render_chat_page(
     from core.mitigations import STRATEGIES, apply_mitigation
     from core.config import load_config
     from core.models import validate_request
-    from core.tools import prepare_sandbox
 
     st.title("Chat Console")
 
@@ -709,6 +702,13 @@ def render_chat_page(
         help="Choose the role recorded for and sent with the next message.",
     )
     if prompt := st.chat_input("Your message"):
+        if not config.api_key:
+            st.error("GROQ_API_KEY is not configured.")
+            st.info(
+                "Create a local .env file with GROQ_API_KEY=your_key, "
+                "or add GROQ_API_KEY to your hosting provider's secrets."
+            )
+            st.stop()
         if not selected_session_id or not selected_model:
             st.warning("Select a model and session to run a turn.")
         else:
@@ -828,74 +828,52 @@ def render_chat_page(
                     st.error(f"Invalid model parameters: {_safe_error(exc)}")
                 else:
                     experiment_id = str(st.session_state.chat_experiment_id or "")
-                    sandbox_path = config.sandbox_dir / (
-                        "".join(
-                            (
-                                character
-                                if character.isalnum() or character in "-_"
-                                else "_"
-                            )
-                            for character in experiment_id
-                        )
-                        + ".db"
+                    tool_names = tool_names if "tool_names" in locals() else None
+                    tool_definitions = (
+                        tool_definitions if "tool_definitions" in locals() else None
                     )
-                    try:
-                        if not config.database_url:
-                            prepare_sandbox(
-                                config.fixture_db, config.sandbox_dir, experiment_id
-                            )
-                    except Exception as exc:
-                        st.error(
-                            f"Could not prepare isolated sandbox: {_safe_error(exc)}"
-                        )
-                    else:
-                        tool_names = tool_names if "tool_names" in locals() else None
-                        tool_definitions = (
-                            tool_definitions if "tool_definitions" in locals() else None
-                        )
-                        if capabilities.supports("tools") and not tool_names:
-                            tool_names = ["read_only_sql"]
-                            tool_definitions = [
-                                {
-                                    "type": "function",
-                                    "function": {
-                                        "name": "read_only_sql",
-                                        "description": "Approved read-only laboratory tool",
-                                        "parameters": {
-                                            "type": "object",
-                                            "properties": {
-                                                "sql": {
-                                                    "type": "string",
-                                                    "description": "One read-only SELECT query",
-                                                }
-                                            },
-                                            "required": ["sql"],
-                                            "additionalProperties": False,
+                    if capabilities.supports("tools") and not tool_names:
+                        tool_names = ["read_only_sql"]
+                        tool_definitions = [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "read_only_sql",
+                                    "description": "Approved read-only laboratory tool",
+                                    "parameters": {
+                                        "type": "object",
+                                        "properties": {
+                                            "sql": {
+                                                "type": "string",
+                                                "description": "One read-only SELECT query",
+                                            }
                                         },
+                                        "required": ["sql"],
+                                        "additionalProperties": False,
                                     },
-                                }
-                            ]
-                        from core.workers import submit_job
+                                },
+                            }
+                        ]
+                    from core.workers import submit_job
 
-                        job_id = submit_job(
-                            "chat-turn",
-                            _run_chat_turn,
-                            config,
-                            experiment_id,
-                            selected_session_id,
-                            prompt,
-                            chat_role,
-                            system_prompt,
-                            selected_model,
-                            params,
-                            session["phase"] if session else "baseline",
-                            tool_names,
-                            tool_definitions,
-                            sandbox_path,
-                        )
-                        st.session_state.chat_job_id = job_id
-                        st.info("Model turn submitted to the background worker.")
-                        st.rerun()
+                    job_id = submit_job(
+                        "chat-turn",
+                        _run_chat_turn,
+                        config,
+                        experiment_id,
+                        selected_session_id,
+                        prompt,
+                        chat_role,
+                        system_prompt,
+                        selected_model,
+                        params,
+                        session["phase"] if session else "baseline",
+                        tool_names,
+                        tool_definitions,
+                    )
+                    st.session_state.chat_job_id = job_id
+                    st.info("Model turn submitted to the background worker.")
+                    st.rerun()
 
     capabilities = _get_model_capabilities(models, selected_model)
     st.subheader("Advanced Parameters")
@@ -1302,7 +1280,6 @@ def render_dashboard_page(
         return
     import streamlit as st
 
-    from core.database import connect_sqlite
     from core.experiments import get_experiment, list_experiments, list_sessions
     from core.detections import list_detections
     from core.mitigations import list_mitigations
@@ -1547,220 +1524,3 @@ def render_dashboard_page(
                         )
     finally:
         conn.close()
-
-
-# ---------------------------------------------------------------------------
-# Archive Page
-# ---------------------------------------------------------------------------
-
-
-def render_archive_page(
-    archives: list[dict[str, Any]] | None = None,
-) -> None:
-    """Render the archive page."""
-    if not _streamlit_available():
-        return
-    import streamlit as st
-
-    from core.archive import export_experiment, import_archive, verify_archive
-    from core.config import load_config
-    from core.database import connect_sqlite
-    from core.experiments import get_experiment, list_experiments
-
-    st.title("Archive")
-
-    search = st.text_input(
-        "Search archives",
-        key="archive_search",
-        placeholder="Search by experiment, model, poison, mitigation, or date",
-    )
-
-    if archives is None:
-        archives = []
-
-    config = load_config()
-    lab_conn = _get_lab_connection(config, readonly=True)
-    try:
-        experiment_meta: dict[str, dict[str, Any]] = {}
-        available_experiment_ids = [item["id"] for item in list_experiments(lab_conn)]
-        for a in archives:
-            exp_id = a.get("experiment_id")
-            if exp_id and exp_id not in experiment_meta:
-                exp = get_experiment(lab_conn, exp_id)
-                if exp:
-                    experiment_meta[exp_id] = exp
-    finally:
-        lab_conn.close()
-
-    filtered = archives
-    if search:
-        term = search.lower()
-        filtered = []
-        for a in archives:
-            exp = (
-                experiment_meta.get(a.get("experiment_id"))
-                if a.get("experiment_id")
-                else None
-            )
-            match = False
-            if term in (str(a.get("experiment_id") or "").lower()):
-                match = True
-            elif term in (str(a.get("path") or "").lower()):
-                match = True
-            elif term in (str(a.get("id") or "").lower()):
-                match = True
-            elif exp:
-                if term in (str(exp.get("model_id") or "").lower()):
-                    match = True
-                elif term in (str(exp.get("title") or "").lower()):
-                    match = True
-                elif term in (str(exp.get("poison_vector") or "").lower()):
-                    match = True
-                elif term in (str(exp.get("mitigation_strategy") or "").lower()):
-                    match = True
-                elif term in (str(exp.get("created_at") or "").lower()):
-                    match = True
-            if match:
-                filtered.append(a)
-
-    if filtered:
-        st.dataframe(
-            [
-                {
-                    "id": a.get("id"),
-                    "experiment_id": a.get("experiment_id"),
-                    "model": (
-                        experiment_meta.get(a.get("experiment_id"), {}) or {}
-                    ).get("model_id")
-                    or "N/A",
-                    "path": a.get("path"),
-                    "size_bytes": a.get("size_bytes"),
-                    "status": a.get("status"),
-                    "created_at": a.get("created_at"),
-                }
-                for a in filtered
-            ],
-            use_container_width=True,
-            key="archive_table",
-        )
-    else:
-        st.info(
-            "No archives found."
-            if archives
-            else "No archives yet. Export an experiment to create one."
-        )
-
-    st.subheader("Archive Operations")
-    if available_experiment_ids:
-        export_experiment_id = st.selectbox(
-            "Export experiment",
-            available_experiment_ids,
-            key="archive_export_experiment",
-        )
-        if st.button("Create Archive", key="create_archive_btn"):
-            try:
-                result = export_experiment(export_experiment_id, config=config)
-                st.success(f"Archive created: {result['path']}")
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Export failed: {_safe_error(exc)}")
-    archive_paths = [a.get("path") for a in filtered if a.get("path")]
-    if archive_paths:
-        selected_archive = st.selectbox(
-            "Select archive",
-            archive_paths,
-            key="archive_select",
-        )
-        if selected_archive:
-            selected_archive_obj = None
-            for a in filtered:
-                if a.get("path") == selected_archive:
-                    selected_archive_obj = a
-                    break
-            selected_exp_id = (
-                selected_archive_obj.get("experiment_id")
-                if selected_archive_obj
-                else None
-            )
-
-            col_verify, col_export, col_restore = st.columns(3)
-
-            with col_verify:
-                if st.button("Verify Hash", key="verify_hash_btn"):
-                    result = verify_archive(selected_archive)
-                    if result["valid"]:
-                        st.success("Archive verified — all hashes match.")
-                    else:
-                        st.error(f"Verification failed: {result.get('errors', [])}")
-                    if result.get("manifest"):
-                        with st.expander("Manifest", expanded=False):
-                            st.json(result["manifest"])
-
-            with col_export:
-                if st.button("Export Experiment", key="archive_export_btn"):
-                    if selected_exp_id:
-                        try:
-                            export_result = export_experiment(
-                                selected_exp_id, config=config
-                            )
-                            st.success(
-                                f"Re-exported experiment {selected_exp_id}: {export_result['path']}"
-                            )
-                            if export_result.get("files"):
-                                with st.expander("Export files", expanded=False):
-                                    st.dataframe(
-                                        [
-                                            {
-                                                "name": f["name"],
-                                                "size_bytes": f["size_bytes"],
-                                            }
-                                            for f in export_result["files"]
-                                        ],
-                                        use_container_width=True,
-                                    )
-                        except Exception as exc:
-                            st.error(f"Export failed: {_safe_error(exc)}")
-                    else:
-                        st.error("Selected archive has no experiment ID.")
-
-            with col_restore:
-                if st.button("Create Review Copy", key="restore_btn"):
-                    try:
-                        result = import_archive(selected_archive, config=config)
-                        st.success(f"Verified review copy: {result['path']}")
-                    except Exception as exc:
-                        st.error(f"Import failed: {_safe_error(exc)}")
-
-            with st.expander("Archive Metadata", expanded=False):
-                archive_dir = Path(selected_archive)
-                if archive_dir.exists():
-                    meta_data = []
-                    for f in sorted(archive_dir.iterdir()):
-                        if f.is_file():
-                            meta_data.append(
-                                {
-                                    "name": f.name,
-                                    "size_bytes": f.stat().st_size,
-                                }
-                            )
-                    st.dataframe(meta_data, use_container_width=True)
-
-                    manifest_path = archive_dir / "manifest.json"
-                    if manifest_path.exists():
-                        try:
-                            manifest = json.loads(manifest_path.read_text())
-                            st.json(manifest)
-                        except (OSError, ValueError) as exc:
-                            st.error(f"Manifest could not be read: {_safe_error(exc)}")
-
-                    if selected_exp_id:
-                        conn = _get_lab_connection(config, readonly=True)
-                        try:
-                            exp = get_experiment(conn, selected_exp_id)
-                            if exp:
-                                st.markdown("**Experiment Metadata**")
-                                st.json(exp)
-                        finally:
-                            conn.close()
-    else:
-        st.info("Select an archive to perform operations.")

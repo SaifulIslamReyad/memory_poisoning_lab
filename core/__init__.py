@@ -1,14 +1,13 @@
 """Core services for Agentic AI Security Lab.
 
 This package exposes submodules that provide the security lab's core
-infrastructure: configuration management, SQLite persistence, model
+infrastructure: configuration management, PostgreSQL persistence, model
 cataloging, agent execution, sandboxing, memory management, safety
 detectors, mitigations, metrics, and background job processing.
 """
 
 __all__ = [
     "agent",        # AgentRunner: executes model requests with security controls
-    "archive",      # ArchiveManager: persists conversation transcripts
     "catalog",      # Model catalog: persists and syncs model metadata from Groq
     "config",       # LabConfig: environment-based configuration and redaction
     "database",     # DB utilities: schema constants, connection, and migration helpers

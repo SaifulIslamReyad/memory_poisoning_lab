@@ -8,7 +8,6 @@ to the `detections` table so they can be reviewed and aggregated later.
 from __future__ import annotations
 
 import json
-import sqlite3
 from typing import Any
 
 from .config import (
@@ -28,7 +27,7 @@ def _decode(value: Any) -> Any:
 
 
 def run_detectors(
-    connection: sqlite3.Connection,
+    connection: Any,
     turn_id: str,
     *,
     content: str | None = None,
@@ -209,7 +208,7 @@ def run_detectors(
 
 
 def record_detection(
-    connection: sqlite3.Connection,
+    connection: Any,
     turn_id: str,
     detector: str,
     signal: str,
@@ -251,7 +250,7 @@ def record_detection(
 
 
 def list_detections(
-    connection: sqlite3.Connection,
+    connection: Any,
     *,
     turn_id: str | None = None,
     experiment_id: str | None = None,

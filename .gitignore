@@ -20,14 +20,6 @@ env/
 .DS_Store
 Thumbs.db
 
-# Data (databases, archives, sandboxes)
-data/lab.sqlite
-data/models.sqlite
-data/archives/
-data/sandbox/
-data/sandboxes/
-ecommerce.db
-
 # Environment
 .env
 

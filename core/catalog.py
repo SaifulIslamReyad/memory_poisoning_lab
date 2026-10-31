@@ -1,8 +1,8 @@
 """Groq model catalog persistence and synchronization.
 
-This module manages an SQLite-backed model catalog that mirrors the Groq
+This module manages a PostgreSQL-backed model catalog that mirrors the Groq
 model API endpoint. Catalog entries are written through a single upsert path
-whether they originate from a remote sync or a local JSON snapshot, ensuring
+whether they originate from a remote sync or a bundled JSON snapshot, ensuring
 consistent normalization of all model metadata.
 """
 
@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -19,9 +18,8 @@ from .config import (
     utc_now,
 )  # json_dumps serializes safely, utc_now gives a Z-normalized timestamp
 from .database import (
-    connect_sqlite,
+    connect_database,
     initialize_models_db,
-    is_postgres_target,
     transaction,
 )
 
@@ -51,7 +49,7 @@ def _optional_int(value: Any) -> int | None:
 
 
 def _optional_bool(value: Any) -> int:
-    """Normalize truthy/falsy values into a SQLite-compatible integer (0 or 1).
+    """Normalize truthy/falsy values into a database-compatible integer (0 or 1).
 
     String forms accepted: "1"/"true"/"yes"/"on" (case-insensitive).
     """
@@ -131,7 +129,7 @@ def normalize_model(
 
 
 def upsert_model(
-    connection: sqlite3.Connection,
+    connection: Any,
     model: dict[str, Any],
     fetched_at: str | None = None,
 ) -> str:
@@ -225,7 +223,7 @@ def import_model_snapshot(
     snapshot_path: str | Path,
     db_path: str | Path | None = None,
     *,
-    connection: sqlite3.Connection | None = None,
+    connection: Any | None = None,
 ) -> dict[str, Any]:
     """Import the bundled JSON snapshot through the same upsert path as sync.
 
@@ -238,12 +236,9 @@ def import_model_snapshot(
         connection is None
     )  # track whether we need to close the connection later
     if connection is None:
-        # Default database location is sibling "models.sqlite" to the snapshot
-        database = (
-            db_path
-            if db_path and is_postgres_target(db_path)
-            else Path(db_path) if db_path else path.parent / "models.sqlite"
-        )
+        database = db_path
+        if not database:
+            raise ValueError("a hosted DATABASE_URL is required")
         connection = initialize_models_db(database)  # ensure the schema exists
     try:
         with path.open(
@@ -274,7 +269,7 @@ def sync_models(
     api_key: str,
     db_path: str | Path | None = None,
     *,
-    connection: sqlite3.Connection | None = None,
+    connection: Any | None = None,
     timeout: float = 30.0,
     url: str | None = None,
 ) -> dict[str, Any]:
@@ -300,17 +295,9 @@ def sync_models(
         raise RuntimeError("requests is required for catalog synchronization") from exc
     owns_connection = connection is None  # track ownership for cleanup
     if connection is None:
-        database = (
-            db_path
-            if db_path and is_postgres_target(db_path)
-            else (
-                Path(db_path)
-                .expanduser()
-                .resolve()  # use caller-provided path if given
-                if db_path
-                else Path(__file__).resolve().parents[1] / "data" / "models.sqlite"
-            )  # default to repo data/ dir
-        )
+        database = db_path
+        if not database:
+            raise ValueError("a hosted DATABASE_URL is required")
         connection = initialize_models_db(database)  # ensure schema exists
     try:
         response = requests.get(  # issue authenticated GET to the catalog endpoint
@@ -339,14 +326,14 @@ def sync_models(
             connection.close()
 
 
-def _model_row(connection: sqlite3.Connection, model_id: str) -> sqlite3.Row | None:
+def _model_row(connection: Any, model_id: str) -> Any | None:
     """Fetch a single model's core row by ID, or None if not found."""
     return connection.execute(
         "SELECT * FROM models WHERE id = ?", (model_id,)
     ).fetchone()
 
 
-def _enrich_model(connection: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
+def _enrich_model(connection: Any, row: Any) -> dict[str, Any]:
     """Expand a core model row into a fully populated dict with child metadata.
 
     Joins child tables (modalities, pricing, features, sampling parameters)
@@ -404,7 +391,7 @@ def _enrich_model(connection: sqlite3.Connection, row: sqlite3.Row) -> dict[str,
 
 def get_model(db_path: str | Path, model_id: str) -> dict[str, Any] | None:
     """Open the database read-only and return a single enriched model, or None."""
-    connection = connect_sqlite(
+    connection = connect_database(
         db_path, readonly=True
     )  # open a connection in read-only mode
     try:
@@ -451,7 +438,7 @@ def list_models(
     where = (
         " WHERE " + " AND ".join(clauses) if clauses else ""
     )  # build the WHERE clause
-    connection = connect_sqlite(db_path, readonly=True)  # open read-only connection
+    connection = connect_database(db_path, readonly=True)  # open read-only connection
     try:
         rows = connection.execute(
             f"SELECT m.* FROM models m{where} ORDER BY m.active DESC, COALESCE(m.name, m.id), m.id",
@@ -494,7 +481,7 @@ def model_ids(
 
 def catalog_stats(db_path: str | Path) -> dict[str, int]:
     """Return aggregate counts for models, active models, features, and parameters."""
-    connection = connect_sqlite(db_path, readonly=True)
+    connection = connect_database(db_path, readonly=True)
     try:
         return {
             # Total number of models in the catalog

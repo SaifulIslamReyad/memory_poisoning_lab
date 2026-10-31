@@ -7,7 +7,6 @@ to a known set to prevent injection of arbitrary destructive actions.
 
 from __future__ import annotations
 
-import sqlite3
 from typing import Any
 
 from .config import new_id, redact, utc_now    # new_id generates IDs with prefix; redact scrubs secrets; utc_now gives timestamp
@@ -31,7 +30,7 @@ STRATEGIES = {
 
 
 def apply_mitigation(
-    connection: sqlite3.Connection,
+    connection: Any,
     experiment_id: str,
     strategy: str,
     *,
@@ -174,7 +173,7 @@ def apply_mitigation(
 
 
 def list_mitigations(
-    connection: sqlite3.Connection,
+    connection: Any,
     *,
     experiment_id: str | None = None,
     turn_id: str | None = None,

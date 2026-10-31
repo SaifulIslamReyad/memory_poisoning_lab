@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import time
-from pathlib import Path
 from typing import Any, Callable, Mapping
 
 # Import configuration and utility functions from the config module
 from .config import LabConfig, json_dumps, load_config, redact
 
 # Import the SQLite connection helper for the lab database
-from .database import connect_sqlite
+from .database import connect_database
 
 # Import detection system that scans assistant responses for compromise signals
 from .detections import run_detectors
@@ -32,9 +30,7 @@ from .models import ModelCapabilities, estimate_token_count, validate_request
 # Import sandbox preparation and read-only tool registration
 from .tools import (
     prepare_postgres_sandbox,
-    prepare_sandbox,
     register_postgres_read_only_tool,
-    register_read_only_tool,
 )
 
 # Default system prompt that instructs the model to use only supplied context,
@@ -56,78 +52,37 @@ class AgentRunner:
         models_db_path: str | None = None,
         lab_db_path: str | None = None,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
-        sandbox_path: str | None = None,
     ) -> None:
         # Load default config if none provided
         self.config = config or load_config()
-        # Path to the models catalog database (for model capabilities/lookup)
-        self.models_db_path = models_db_path or str(self.config.models_target)
-        # Path to the lab SQLite database (stores all experiment/turn/memory evidence)
-        self.lab_db_path = lab_db_path or str(self.config.database_target)
+        if not self.config.database_url:
+            raise ValueError("DATABASE_URL is required for hosted PostgreSQL mode")
+        self.models_db_path = models_db_path or self.config.database_url
+        self.lab_db_path = lab_db_path or self.config.database_url
         # The system prompt that governs model behavior
         self.system_prompt = system_prompt
         # Injected OpenAI/Groq client (for testing or custom configuration); lazy-loaded on first use
         self.client = client
-        # Resolve and expand the sandbox database path used for read-only SQL tool
-        self.sandbox_path = (
-            Path(sandbox_path).expanduser().resolve() if sandbox_path else None
-        )
         # Registry of tool callables that the model can invoke; starts empty
         self._tool_registry: dict[str, Callable[..., Any]] = {}
-        # If a sandbox path is provided at construction, pre-register the read_only_sql tool
-        if self.sandbox_path and not self.config.database_url:
-            for name, function in create_default_tool_registry(
-                self.sandbox_path,
-                max_rows=self.config.max_rows,
-                max_result_bytes=self.config.max_result_bytes,
-                max_steps=self.config.max_query_steps,
-            ).items():
-                self.register_tool(name, function)
 
     def _ensure_read_only_tool(self, experiment_id: str) -> None:
         """Lazily create or fetch the read_only_sql tool bound to this experiment's sandbox."""
         # If the read_only_sql tool is already registered, no work needed
         if "read_only_sql" in self._tool_registry:
             return
-        # If no sandbox path is set, derive one from the experiment ID
-        if self.config.database_url:
-            schema = prepare_postgres_sandbox(
-                self.config.database_url,
-                self.config.base_dir / "fixtures",
-                experiment_id,
-            )
-            self.register_tool(
-                "read_only_sql",
-                register_postgres_read_only_tool(
-                    self.config.database_url,
-                    schema,
-                    max_rows=self.config.max_rows,
-                    max_result_bytes=self.config.max_result_bytes,
-                ),
-            )
-            return
-        if self.sandbox_path is None:
-            # Sanitize the experiment ID into a filesystem-safe name (only alnum, -, _)
-            safe_id = "".join(
-                character if character.isalnum() or character in "-_" else "_"
-                for character in experiment_id
-            )
-            self.sandbox_path = self.config.sandbox_dir / f"{safe_id}.db"
-        # If the sandbox database doesn't exist yet, create it by copying the fixture database
-        if not self.sandbox_path.exists():
-            prepare_sandbox(
-                self.config.fixture_db,
-                self.sandbox_path.parent,
-                self.sandbox_path.stem,
-            )
-        # Register the read-only SQL tool with the sandbox path and configured limits
+        schema = prepare_postgres_sandbox(
+            self.config.database_url,
+            self.config.base_dir / "fixtures",
+            experiment_id,
+        )
         self.register_tool(
             "read_only_sql",
-            register_read_only_tool(
-                self.sandbox_path,
+            register_postgres_read_only_tool(
+                self.config.database_url,
+                schema,
                 max_rows=self.config.max_rows,
                 max_result_bytes=self.config.max_result_bytes,
-                max_steps=self.config.max_query_steps,
             ),
         )
 
@@ -190,7 +145,7 @@ class AgentRunner:
 
     def _messages(
         self,
-        connection: sqlite3.Connection,
+        connection: Any,
         session_id: str,
         memory_namespace: str,
         memory_policy: str | None,
@@ -412,7 +367,7 @@ class AgentRunner:
 
     def _record_memory_reads(
         self,
-        connection: sqlite3.Connection,
+        connection: Any,
         session_id: str,
         turn_id: str,
         memory: list[dict[str, Any]],
@@ -438,7 +393,7 @@ class AgentRunner:
 
     def _record_tool_memory(
         self,
-        connection: sqlite3.Connection,
+        connection: Any,
         session_id: str,
         turn_id: str,
         tool_results: list[dict[str, Any]],
@@ -467,7 +422,7 @@ class AgentRunner:
 
     def _record_turn_metrics(
         self,
-        connection: sqlite3.Connection,
+        connection: Any,
         experiment_id: str,
         session_id: str,
         turn_id: str,
@@ -535,7 +490,7 @@ class AgentRunner:
         if not isinstance(content, str) or not content.strip():
             raise ValueError("content must be a non-empty string")
         # Open a writable connection to the lab database
-        connection = connect_sqlite(self.lab_db_path)
+        connection = connect_database(self.lab_db_path)
         try:
             # Fetch the session record to validate it exists and belongs to this experiment
             session = get_session(connection, session_id)
@@ -857,28 +812,6 @@ class AgentRunner:
         return self.run_turn(experiment_id, session_id, content, **kwargs)
 
 
-def create_default_tool_registry(
-    sandbox_path: str | None = None,
-    *,
-    max_rows: int = 100,
-    max_result_bytes: int = 1024 * 1024,
-    max_steps: int = 100000,
-) -> dict[str, Callable[..., Any]]:
-    """Create a tool registry containing only the read-only SQL tool bound to a sandbox."""
-    # If no sandbox path is provided, return an empty registry (no tools available)
-    if sandbox_path is None:
-        return {}
-    # Build and return a registry with a single "read_only_sql" tool
-    return {
-        "read_only_sql": register_read_only_tool(
-            sandbox_path,
-            max_rows=max_rows,
-            max_result_bytes=max_result_bytes,
-            max_steps=max_steps,
-        )
-    }
-
-
 def run_turn(
     experiment_id: str,
     session_id: str,
@@ -900,4 +833,4 @@ def run_turn(
     return runner.run_turn(experiment_id, session_id, content, **kwargs)
 
 
-__all__ = ["AgentRunner", "create_default_tool_registry", "run_turn"]
+__all__ = ["AgentRunner", "run_turn"]
