@@ -10,18 +10,25 @@ from typing import Any, Callable, Mapping
 
 # Import configuration and utility functions from the config module
 from .config import LabConfig, json_dumps, load_config, redact
+
 # Import the SQLite connection helper for the lab database
 from .database import connect_sqlite
+
 # Import detection system that scans assistant responses for compromise signals
 from .detections import run_detectors
+
 # Import experiment and session persistence functions
 from .experiments import append_turn, get_session, get_session_messages
+
 # Import memory management functions for reading, writing, and recording memory events
 from .memory import read_memory, record_memory_event, write_memory
+
 # Import metrics recording function for performance/cost tracking
 from .metrics import record_metric
+
 # Import model capability checking and request validation
 from .models import ModelCapabilities, estimate_token_count, validate_request
+
 # Import sandbox preparation and read-only tool registration
 from .tools import prepare_sandbox, register_read_only_tool
 
@@ -57,7 +64,9 @@ class AgentRunner:
         # Injected OpenAI/Groq client (for testing or custom configuration); lazy-loaded on first use
         self.client = client
         # Resolve and expand the sandbox database path used for read-only SQL tool
-        self.sandbox_path = Path(sandbox_path).expanduser().resolve() if sandbox_path else None
+        self.sandbox_path = (
+            Path(sandbox_path).expanduser().resolve() if sandbox_path else None
+        )
         # Registry of tool callables that the model can invoke; starts empty
         self._tool_registry: dict[str, Callable[..., Any]] = {}
         # If a sandbox path is provided at construction, pre-register the read_only_sql tool
@@ -156,7 +165,6 @@ class AgentRunner:
             "probe": "active",
             "mitigation": "trusted",
             "post_mitigation": "trusted",
-            
         }.get(phase, "active")
 
     def _messages(
@@ -282,7 +290,9 @@ class AgentRunner:
             item = {
                 "id": getattr(call, "id", None),
                 "name": getattr(getattr(call, "function", None), "name", None),
-                "arguments": getattr(getattr(call, "function", None), "arguments", None),
+                "arguments": getattr(
+                    getattr(call, "function", None), "arguments", None
+                ),
             }
             result.append(item)
         return result
@@ -295,7 +305,8 @@ class AgentRunner:
             return {
                 key: int(value)
                 for key, value in usage.items()
-                if key in {"prompt_tokens", "completion_tokens", "total_tokens"} and value is not None
+                if key in {"prompt_tokens", "completion_tokens", "total_tokens"}
+                and value is not None
             }
         # Handle SDK response objects with .usage attribute
         usage = getattr(response, "usage", None)
@@ -305,7 +316,8 @@ class AgentRunner:
             return {
                 key: int(value)
                 for key, value in usage.items()
-                if key in {"prompt_tokens", "completion_tokens", "total_tokens"} and value is not None
+                if key in {"prompt_tokens", "completion_tokens", "total_tokens"}
+                and value is not None
             }
         # Extract usage attributes from SDK usage object
         return {
@@ -329,7 +341,9 @@ class AgentRunner:
             "usage": self._response_usage(response),
         }
 
-    def _estimate_cost(self, model: Mapping[str, Any], usage: Mapping[str, int]) -> str | None:
+    def _estimate_cost(
+        self, model: Mapping[str, Any], usage: Mapping[str, int]
+    ) -> str | None:
         """Calculate the estimated API cost based on token usage and model pricing."""
         # Look up per-token prices for prompt and completion from the model record
         prompt_price = (model.get("pricing") or {}).get("prompt")
@@ -430,7 +444,10 @@ class AgentRunner:
             ("latency_ms", latency_ms),
             ("prompt_tokens", prompt_tokens),
             ("completion_tokens", completion_tokens),
-            ("estimated_cost", float(estimated_cost) if estimated_cost is not None else None),
+            (
+                "estimated_cost",
+                float(estimated_cost) if estimated_cost is not None else None,
+            ),
         )
         # Record each non-None metric
         for name, value in values:
@@ -463,6 +480,7 @@ class AgentRunner:
         session_id: str,
         content: str,
         *,
+        role: str = "user",
         model_id: str | None = None,
         parameters: Mapping[str, Any] | None = None,
         phase: str | None = None,
@@ -470,7 +488,9 @@ class AgentRunner:
         tool_names: list[str] | None = None,
         tool_definitions: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """Persist one user/assistant turn and return its evidence record."""
+        """Persist one message/assistant turn and return its evidence record."""
+        if role not in {"system", "user", "assistant"}:
+            raise ValueError("role must be one of ['assistant', 'system', 'user']")
         # Reject empty or non-string content early
         if not isinstance(content, str) or not content.strip():
             raise ValueError("content must be a non-empty string")
@@ -512,8 +532,7 @@ class AgentRunner:
                 effective_policy,
                 session["phase"],
             )
-            # Append the user's new message to the message list
-            messages.append({"role": "user", "content": content})
+            messages.append({"role": role, "content": content})
             # Estimate total prompt tokens for validation
             prompt_tokens = sum(estimate_token_count(message) for message in messages)
             # Start building the request parameters dict
@@ -545,13 +564,19 @@ class AgentRunner:
                         raise ValueError("tool definitions must be objects")
                     function = definition.get("function")
                     if not isinstance(function, dict) or not function.get("name"):
-                        raise ValueError("each tool definition must contain function.name")
+                        raise ValueError(
+                            "each tool definition must contain function.name"
+                        )
                     # Only include definitions that match allowlisted tool names
                     if function["name"] in allowed_names:
                         selected_tools.append(definition)
                 # Ensure every allowlisted tool has a corresponding definition
-                if {item["function"]["name"] for item in selected_tools} != allowed_names:
-                    raise ValueError("tool definitions must define every allowlisted tool")
+                if {
+                    item["function"]["name"] for item in selected_tools
+                } != allowed_names:
+                    raise ValueError(
+                        "tool definitions must define every allowlisted tool"
+                    )
                 # Attach the validated tool definitions to the request
                 request_parameters["tools"] = selected_tools
             # Validate the request parameters against model capabilities (token limits, etc.)
@@ -566,11 +591,10 @@ class AgentRunner:
             evidence_request = redact(provider_request)
             # Begin a transaction to persist the user's turn before calling the model
             connection.execute("BEGIN")
-            # Persist the user's turn (message + request evidence) without committing yet
             user_turn_id = append_turn(
                 connection,
                 session_id,
-                role="user",
+                role=role,
                 content=content,
                 phase=turn_phase,
                 model_request=evidence_request,
@@ -590,7 +614,9 @@ class AgentRunner:
             started = time.perf_counter()
             try:
                 # Send the request to the model API and get the raw response
-                response = self._get_client().chat.completions.create(**provider_request)
+                response = self._get_client().chat.completions.create(
+                    **provider_request
+                )
                 # Extract text content from the response
                 response_content = self._response_content(response)
                 # Extract any tool call requests from the response
@@ -602,11 +628,17 @@ class AgentRunner:
                     arguments = call.get("arguments")
                     try:
                         output = self._execute_tool(name, arguments)
-                        tool_results.append({"call_id": call.get("id"), "name": name, "output": output})
+                        tool_results.append(
+                            {"call_id": call.get("id"), "name": name, "output": output}
+                        )
                     except Exception as exc:
                         # Record tool execution errors rather than failing the entire turn
                         tool_results.append(
-                            {"call_id": call.get("id"), "name": name, "error": f"{type(exc).__name__}: {exc}"}
+                            {
+                                "call_id": call.get("id"),
+                                "name": name,
+                                "error": f"{type(exc).__name__}: {exc}",
+                            }
                         )
                 # Serialize the full response for evidence storage (redacted)
                 serialized_response = self._serialize_response(response)
@@ -742,12 +774,14 @@ def create_default_tool_registry(
     if sandbox_path is None:
         return {}
     # Build and return a registry with a single "read_only_sql" tool
-    return {"read_only_sql": register_read_only_tool(
-        sandbox_path,
-        max_rows=max_rows,
-        max_result_bytes=max_result_bytes,
-        max_steps=max_steps,
-    )}
+    return {
+        "read_only_sql": register_read_only_tool(
+            sandbox_path,
+            max_rows=max_rows,
+            max_result_bytes=max_result_bytes,
+            max_steps=max_steps,
+        )
+    }
 
 
 def run_turn(

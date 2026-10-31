@@ -105,13 +105,15 @@ def _load_transcript_turns(session_id: str) -> list[dict[str, Any]]:
                 content = f"Error: {t['error']}"
             if content is None:
                 continue
-            messages.append({
-                "role": t["role"],
-                "content": str(content),
-                "turn_id": t["id"],
-                "raw_request": redact(t.get("model_request")),
-                "raw_response": redact(t.get("model_response")),
-            })
+            messages.append(
+                {
+                    "role": t["role"],
+                    "content": str(content),
+                    "turn_id": t["id"],
+                    "raw_request": redact(t.get("model_request")),
+                    "raw_response": redact(t.get("model_response")),
+                }
+            )
         return messages
     finally:
         conn.close()
@@ -122,6 +124,8 @@ def _run_chat_turn(
     experiment_id: str,
     session_id: str,
     prompt: str,
+    role: str,
+    system_prompt: str,
     model_id: str,
     parameters: dict[str, Any],
     phase: str,
@@ -132,11 +136,16 @@ def _run_chat_turn(
     """Run one model turn in a background worker."""
     from core.agent import AgentRunner
 
-    runner = AgentRunner(config=config, sandbox_path=str(sandbox_path))
+    runner = AgentRunner(
+        config=config,
+        system_prompt=system_prompt,
+        sandbox_path=str(sandbox_path),
+    )
     return runner.run_turn(
         experiment_id=experiment_id,
         session_id=session_id,
         content=prompt,
+        role=role,
         model_id=model_id,
         parameters=parameters or None,
         phase=phase,
@@ -168,6 +177,7 @@ def _json_code(value: Any) -> None:
 # ---------------------------------------------------------------------------
 # Catalog Page
 # ---------------------------------------------------------------------------
+
 
 def render_catalog_page(
     models: list[dict[str, Any]] | None = None,
@@ -214,7 +224,9 @@ def render_catalog_page(
             config = load_config()
             with st.spinner("Importing model snapshot..."):
                 try:
-                    result = import_model_snapshot(config.model_snapshot, db_path=config.models_db)
+                    result = import_model_snapshot(
+                        config.model_snapshot, db_path=config.models_db
+                    )
                     st.success(
                         f"Imported {result['imported']} models from snapshot. "
                         f"{len(result['warnings'])} warnings."
@@ -235,7 +247,11 @@ def render_catalog_page(
 
     filter_col, search_col, active_col, modality_col = st.columns(4)
     with filter_col:
-        search = st.text_input("Search models", key="catalog_search", placeholder="Search by ID, name, or owner")
+        search = st.text_input(
+            "Search models",
+            key="catalog_search",
+            placeholder="Search by ID, name, or owner",
+        )
     with active_col:
         active_only = st.checkbox("Active only", value=True, key="catalog_active")
     with modality_col:
@@ -256,7 +272,8 @@ def render_catalog_page(
     if search:
         term = search.lower()
         filtered = [
-            m for m in filtered
+            m
+            for m in filtered
             if term in (m.get("id") or "").lower()
             or term in (m.get("name") or "").lower()
             or term in (m.get("owned_by") or "").lower()
@@ -265,7 +282,8 @@ def render_catalog_page(
         filtered = [m for m in filtered if m.get("active")]
     if modality_filter:
         filtered = [
-            m for m in filtered
+            m
+            for m in filtered
             if modality_filter in (m.get("input_modalities") or [])
             or modality_filter in (m.get("output_modalities") or [])
         ]
@@ -291,7 +309,9 @@ def render_catalog_page(
     st.subheader("Model Detail")
     model_ids = [m["id"] for m in filtered]
     if model_ids:
-        selected_id = st.selectbox("Select model for detail", model_ids, key="catalog_detail_select")
+        selected_id = st.selectbox(
+            "Select model for detail", model_ids, key="catalog_detail_select"
+        )
         if selected_id:
             from core.catalog import get_model
             from core.config import load_config
@@ -310,7 +330,9 @@ def render_catalog_page(
 
                         st.write(
                             "Created:",
-                            datetime.fromtimestamp(created, tz=timezone.utc).isoformat(),
+                            datetime.fromtimestamp(
+                                created, tz=timezone.utc
+                            ).isoformat(),
                         )
                     st.write("Owned By:", detail.get("owned_by") or "N/A")
                     st.write("Active:", detail.get("active"))
@@ -321,7 +343,9 @@ def render_catalog_page(
                         "Max Completion Tokens:",
                         detail.get("max_completion_tokens") or "N/A",
                     )
-                    st.write("Max Output Length:", detail.get("max_output_length") or "N/A")
+                    st.write(
+                        "Max Output Length:", detail.get("max_output_length") or "N/A"
+                    )
                     st.write("Hugging Face ID:", detail.get("hugging_face_id") or "N/A")
                     st.write(
                         "Input Modalities:",
@@ -371,6 +395,7 @@ def render_catalog_page(
 # ---------------------------------------------------------------------------
 # Chat Console Page
 # ---------------------------------------------------------------------------
+
 
 def render_chat_page(
     models: list[dict[str, Any]] | None = None,
@@ -427,7 +452,8 @@ def render_chat_page(
 
     model_ids = [m["id"] for m in (models or [])]
     text_model_ids = [
-        m["id"] for m in (models or [])
+        m["id"]
+        for m in (models or [])
         if "text" in (m.get("input_modalities") or [])
         and "text" in (m.get("output_modalities") or [])
     ]
@@ -435,7 +461,9 @@ def render_chat_page(
     if text_model_ids:
         selected_model = st.selectbox("Model", text_model_ids, key="chat_model_select")
     elif model_ids:
-        selected_model = st.selectbox("Model (no text/text)", model_ids, key="chat_model_select")
+        selected_model = st.selectbox(
+            "Model (no text/text)", model_ids, key="chat_model_select"
+        )
     else:
         selected_model = None
         st.warning("No models available. Sync or import the catalog first.")
@@ -464,7 +492,14 @@ def render_chat_page(
         )
         poison_vector = st.selectbox(
             "Poison vector",
-            ["none", "direct_assertion", "retrieved_document", "tool_response", "assistant_summary", "persisted_profile"],
+            [
+                "none",
+                "direct_assertion",
+                "retrieved_document",
+                "tool_response",
+                "assistant_summary",
+                "persisted_profile",
+            ],
             key="new_poison_vector",
         )
         mitigation_strategy = st.selectbox(
@@ -476,7 +511,9 @@ def render_chat_page(
             selected_exp = st.selectbox(
                 "Select experiment",
                 exp_options,
-                index=exp_options.index(current_exp) if current_exp in exp_options else 0,
+                index=(
+                    exp_options.index(current_exp) if current_exp in exp_options else 0
+                ),
                 key="chat_experiment_select",
             )
         else:
@@ -491,8 +528,14 @@ def render_chat_page(
                         conn,
                         new_exp_name.strip(),
                         model_id=selected_model,
-                        poison_vector=None if poison_vector == "none" else poison_vector,
-                        mitigation_strategy=None if mitigation_strategy == "none" else mitigation_strategy,
+                        poison_vector=(
+                            None if poison_vector == "none" else poison_vector
+                        ),
+                        mitigation_strategy=(
+                            None
+                            if mitigation_strategy == "none"
+                            else mitigation_strategy
+                        ),
                     )
 
                     st.session_state.chat_experiment_id = exp_id
@@ -507,7 +550,7 @@ def render_chat_page(
                     conn.close()
             else:
                 st.warning("Experiment name is required.")
-        
+
         # Delete Experiment button
         if exp_options and selected_exp:
             if st.button("Delete Experiment", key="delete_exp_btn", type="secondary"):
@@ -550,7 +593,11 @@ def render_chat_page(
                 selected_session_id = st.selectbox(
                     "Select session",
                     sess_options,
-                    index=sess_options.index(current_sess) if current_sess in sess_options else 0,
+                    index=(
+                        sess_options.index(current_sess)
+                        if current_sess in sess_options
+                        else 0
+                    ),
                     key="chat_session_select",
                 )
                 if selected_session_id != st.session_state.chat_session_id:
@@ -575,11 +622,14 @@ def render_chat_page(
             sorted(PHASES),
             key="new_session_phase",
         )
-        new_namespace = st.text_input(
-            "Memory namespace (blank reuses run namespace)",
-            key="new_memory_namespace",
-            placeholder="optional",
-        ).strip() or None
+        new_namespace = (
+            st.text_input(
+                "Memory namespace (blank reuses run namespace)",
+                key="new_memory_namespace",
+                placeholder="optional",
+            ).strip()
+            or None
+        )
         if st.button("Create Session", key="create_sess_btn"):
             if st.session_state.chat_experiment_id:
                 conn = _get_lab_connection(config)
@@ -626,7 +676,10 @@ def render_chat_page(
         conn = _get_lab_connection(config, readonly=True)
         try:
             session = get_session(conn, selected_session_id)
-            if session and session.get("experiment_id") != st.session_state.chat_experiment_id:
+            if (
+                session
+                and session.get("experiment_id") != st.session_state.chat_experiment_id
+            ):
                 session = None
         finally:
             conn.close()
@@ -678,6 +731,7 @@ def render_chat_page(
         else:
             st.info(f"Model turn is {job.get('status', 'queued')}.")
             import time
+
             time.sleep(1)
             st.rerun()
 
@@ -696,6 +750,21 @@ def render_chat_page(
                     for detection in msg["detections"]:
                         _json_code(detection)
 
+    from core.agent import DEFAULT_SYSTEM_PROMPT
+
+    system_prompt = st.text_area(
+        "System prompt",
+        value=DEFAULT_SYSTEM_PROMPT,
+        key="chat_system_prompt",
+        help="This prompt is sent as the system message for the next model turn.",
+        height=140,
+    )
+    chat_role = st.selectbox(
+        "Message role",
+        ["user", "system", "assistant"],
+        key="chat_role_select",
+        help="Choose the role recorded for and sent with the next message.",
+    )
     if prompt := st.chat_input("Your message"):
         if not selected_session_id or not selected_model:
             st.warning("Select a model and session to run a turn.")
@@ -710,8 +779,10 @@ def render_chat_page(
                 else:
                     st.session_state.chat_job_id = None
             if not st.session_state.chat_job_id:
-                st.session_state.chat_messages.append({"role": "user", "content": prompt})
-                with st.chat_message("user"):
+                st.session_state.chat_messages.append(
+                    {"role": chat_role, "content": prompt}
+                )
+                with st.chat_message(chat_role):
                     _code_block(prompt)
 
                 capabilities = _get_model_capabilities(models, selected_model)
@@ -723,22 +794,38 @@ def render_chat_page(
                     if "top_p" in sampling:
                         params["top_p"] = st.session_state.get("adv_top_p", 0.9)
                     if "stop" in sampling:
-                        stop_value = str(st.session_state.get("adv_stop", "") or "").strip()
+                        stop_value = str(
+                            st.session_state.get("adv_stop", "") or ""
+                        ).strip()
                         if stop_value:
                             params["stop"] = [
-                                item.strip() for item in stop_value.split(",") if item.strip()
+                                item.strip()
+                                for item in stop_value.split(",")
+                                if item.strip()
                             ][:4]
                     if "seed" in sampling:
                         params["seed"] = st.session_state.get("adv_seed", 42)
                     if "max_tokens" in sampling:
-                        params["max_tokens"] = st.session_state.get("adv_max_tokens", 1024)
-                    if capabilities.supports("json_mode") and st.session_state.get("adv_json", False):
+                        params["max_tokens"] = st.session_state.get(
+                            "adv_max_tokens", 1024
+                        )
+                    if capabilities.supports("json_mode") and st.session_state.get(
+                        "adv_json", False
+                    ):
                         params["json_mode"] = True
-                    if capabilities.supports("reasoning") and st.session_state.get("adv_reasoning", "none") != "none":
-                        params["reasoning_effort"] = st.session_state.get("adv_reasoning", "medium")
-                    structured_schema = str(st.session_state.get("adv_structured_schema", "") or "").strip()
+                    if (
+                        capabilities.supports("reasoning")
+                        and st.session_state.get("adv_reasoning", "none") != "none"
+                    ):
+                        params["reasoning_effort"] = st.session_state.get(
+                            "adv_reasoning", "medium"
+                        )
+                    structured_schema = str(
+                        st.session_state.get("adv_structured_schema", "") or ""
+                    ).strip()
                     if structured_schema and (
-                        capabilities.supports("structured_outputs") or capabilities.supports("json_mode")
+                        capabilities.supports("structured_outputs")
+                        or capabilities.supports("json_mode")
                     ):
                         try:
                             params["response_format"] = {
@@ -750,13 +837,19 @@ def render_chat_page(
                                 },
                             }
                         except ValueError as exc:
-                            params["invalid_parameter"] = f"structured-output schema must be valid JSON: {exc}"
-                    tool_definitions_json = str(st.session_state.get("adv_tool_definitions", "") or "").strip()
+                            params["invalid_parameter"] = (
+                                f"structured-output schema must be valid JSON: {exc}"
+                            )
+                    tool_definitions_json = str(
+                        st.session_state.get("adv_tool_definitions", "") or ""
+                    ).strip()
                     if tool_definitions_json and capabilities.supports("tools"):
                         try:
                             parsed_tools = json.loads(tool_definitions_json)
                             if not isinstance(parsed_tools, list) or not parsed_tools:
-                                raise ValueError("tool definitions must be a non-empty list")
+                                raise ValueError(
+                                    "tool definitions must be a non-empty list"
+                                )
                             params["tools"] = parsed_tools
                             tool_names = [
                                 item.get("function", {}).get("name")
@@ -765,10 +858,16 @@ def render_chat_page(
                                 and isinstance(item.get("function"), dict)
                                 and item["function"].get("name")
                             ]
-                            if not tool_names or any(not isinstance(name, str) for name in tool_names):
-                                raise ValueError("each tool definition must contain function.name")
+                            if not tool_names or any(
+                                not isinstance(name, str) for name in tool_names
+                            ):
+                                raise ValueError(
+                                    "each tool definition must contain function.name"
+                                )
                         except (TypeError, ValueError) as exc:
-                            params["invalid_parameter"] = f"tool definitions must be valid JSON: {exc}"
+                            params["invalid_parameter"] = (
+                                f"tool definitions must be valid JSON: {exc}"
+                            )
                 try:
                     if capabilities is None:
                         raise ValueError("model capabilities are unavailable")
@@ -781,18 +880,28 @@ def render_chat_page(
                     experiment_id = str(st.session_state.chat_experiment_id or "")
                     sandbox_path = config.sandbox_dir / (
                         "".join(
-                            character if character.isalnum() or character in "-_" else "_"
+                            (
+                                character
+                                if character.isalnum() or character in "-_"
+                                else "_"
+                            )
                             for character in experiment_id
                         )
                         + ".db"
                     )
                     try:
-                        prepare_sandbox(config.fixture_db, config.sandbox_dir, experiment_id)
+                        prepare_sandbox(
+                            config.fixture_db, config.sandbox_dir, experiment_id
+                        )
                     except Exception as exc:
-                        st.error(f"Could not prepare isolated sandbox: {_safe_error(exc)}")
+                        st.error(
+                            f"Could not prepare isolated sandbox: {_safe_error(exc)}"
+                        )
                     else:
                         tool_names = tool_names if "tool_names" in locals() else None
-                        tool_definitions = tool_definitions if "tool_definitions" in locals() else None
+                        tool_definitions = (
+                            tool_definitions if "tool_definitions" in locals() else None
+                        )
                         if capabilities.supports("tools") and not tool_names:
                             tool_names = ["read_only_sql"]
                             tool_definitions = [
@@ -814,6 +923,8 @@ def render_chat_page(
                             experiment_id,
                             selected_session_id,
                             prompt,
+                            chat_role,
+                            system_prompt,
                             selected_model,
                             params,
                             session["phase"] if session else "baseline",
@@ -879,28 +990,47 @@ def render_chat_page(
             disabled=not max_tokens_enabled,
         )
         json_mode = st.checkbox(
-            "JSON mode" if capabilities and capabilities.supports("json_mode") else "JSON mode (not supported)",
+            (
+                "JSON mode"
+                if capabilities and capabilities.supports("json_mode")
+                else "JSON mode (not supported)"
+            ),
             key="adv_json",
             disabled=not (capabilities and capabilities.supports("json_mode")),
         )
         reasoning_value = st.selectbox(
-            "Reasoning effort" if capabilities and capabilities.supports("reasoning") else "Reasoning effort (not supported)",
+            (
+                "Reasoning effort"
+                if capabilities and capabilities.supports("reasoning")
+                else "Reasoning effort (not supported)"
+            ),
             ["none", "low", "medium", "high"],
             key="adv_reasoning",
             disabled=not (capabilities and capabilities.supports("reasoning")),
         )
         structured_supported = bool(
             capabilities
-            and (capabilities.supports("structured_outputs") or capabilities.supports("json_mode"))
+            and (
+                capabilities.supports("structured_outputs")
+                or capabilities.supports("json_mode")
+            )
         )
         st.text_area(
-            "Structured-output JSON schema" if structured_supported else "Structured-output JSON schema (not supported)",
+            (
+                "Structured-output JSON schema"
+                if structured_supported
+                else "Structured-output JSON schema (not supported)"
+            ),
             key="adv_structured_schema",
             placeholder='{"type":"object","properties":{}}',
             disabled=not structured_supported,
         )
         st.text_area(
-            "Tool definitions JSON" if capabilities and capabilities.supports("tools") else "Tool definitions JSON (not supported)",
+            (
+                "Tool definitions JSON"
+                if capabilities and capabilities.supports("tools")
+                else "Tool definitions JSON (not supported)"
+            ),
             key="adv_tool_definitions",
             placeholder='[{"type":"function","function":{"name":"read_only_sql","description":"...","parameters":{"type":"object"}}}]',
             disabled=not (capabilities and capabilities.supports("tools")),
@@ -919,8 +1049,16 @@ def render_chat_page(
                 "tools": locals().get("params", {}).get("tools"),
             }.items()
             if (
-                (key == "json_mode" and capabilities and capabilities.supports("json_mode"))
-                or (key == "reasoning_effort" and capabilities and capabilities.supports("reasoning"))
+                (
+                    key == "json_mode"
+                    and capabilities
+                    and capabilities.supports("json_mode")
+                )
+                or (
+                    key == "reasoning_effort"
+                    and capabilities
+                    and capabilities.supports("reasoning")
+                )
                 or (key in {"response_format", "tools"} and value is not None)
                 or key in sampling
             )
@@ -928,14 +1066,20 @@ def render_chat_page(
         st.session_state.adv_params = supported_params
         _json_code(supported_params)
 
-    show_raw = st.checkbox("Show raw evidence (request/response)", key="raw_evidence_toggle")
+    show_raw = st.checkbox(
+        "Show raw evidence (request/response)", key="raw_evidence_toggle"
+    )
     if show_raw:
         for msg in reversed(st.session_state.chat_messages):
             if msg.get("raw_request"):
-                with st.expander(f"Raw Request - {msg.get('turn_id', 'unknown')}", expanded=False):
+                with st.expander(
+                    f"Raw Request - {msg.get('turn_id', 'unknown')}", expanded=False
+                ):
                     _json_code(msg["raw_request"])
             if msg.get("raw_response"):
-                with st.expander(f"Raw Response - {msg.get('turn_id', 'unknown')}", expanded=False):
+                with st.expander(
+                    f"Raw Response - {msg.get('turn_id', 'unknown')}", expanded=False
+                ):
                     _json_code(msg["raw_response"])
 
     st.subheader("Memory Panel")
@@ -955,7 +1099,11 @@ def render_chat_page(
                                 [
                                     {
                                         "key": e.get("memory_key"),
-                                        "value": json.dumps(e.get("value"))[:100] if e.get("value") else None,
+                                        "value": (
+                                            json.dumps(e.get("value"))[:100]
+                                            if e.get("value")
+                                            else None
+                                        ),
                                         "provenance": e.get("provenance", "N/A"),
                                         "status": e.get("status", "N/A"),
                                     }
@@ -969,7 +1117,9 @@ def render_chat_page(
                     conn.close()
         with mem_col2:
             mem_key = st.text_input("Memory key", key="mem_key", placeholder="key")
-            mem_value = st.text_area("Memory value", key="mem_value", placeholder="value")
+            mem_value = st.text_area(
+                "Memory value", key="mem_value", placeholder="value"
+            )
             mem_provenance = st.selectbox(
                 "Provenance",
                 ["explicit", "trusted", "untrusted", "poison", "tool"],
@@ -1079,7 +1229,9 @@ def render_chat_page(
                 conn = _get_lab_connection(config)
                 try:
                     turns = get_turns(conn, session_id=selected_session_id)
-                    assistant_turns = [turn for turn in turns if turn.get("role") == "assistant"]
+                    assistant_turns = [
+                        turn for turn in turns if turn.get("role") == "assistant"
+                    ]
                     if not assistant_turns:
                         st.warning("No assistant turn is available for detection.")
                     else:
@@ -1128,7 +1280,9 @@ def render_chat_page(
                 finally:
                     conn.close()
         with phase_row[1]:
-            if st.button("Start Post-Mitigation Phase", key="phase_post_mitigation_btn"):
+            if st.button(
+                "Start Post-Mitigation Phase", key="phase_post_mitigation_btn"
+            ):
                 conn = _get_lab_connection(config)
                 try:
                     transition_session(conn, selected_session_id, "post_mitigation")
@@ -1162,6 +1316,7 @@ def render_chat_page(
 # ---------------------------------------------------------------------------
 # Dashboard Page
 # ---------------------------------------------------------------------------
+
 
 def render_dashboard_page(
     experiment_ids: list[str] | None = None,
@@ -1201,7 +1356,9 @@ def render_dashboard_page(
             st.error("Experiment not found.")
             return
 
-        summary = experiment_summaries.get(selected_exp) if experiment_summaries else None
+        summary = (
+            experiment_summaries.get(selected_exp) if experiment_summaries else None
+        )
         if summary is None:
             with st.spinner("Computing summary..."):
                 summary = summarize_experiment(conn, selected_exp)
@@ -1228,7 +1385,9 @@ def render_dashboard_page(
         c15.metric("Total Cost", f"${summary.get('total_cost', 0):.8f}")
         c16.metric("Avg Cost/Turn", f"${summary.get('avg_cost_per_turn', 0):.8f}")
 
-        st.markdown(f"**Model:** `{summary.get('model_id', 'N/A')}` | **Experiment:** `{selected_exp}`")
+        st.markdown(
+            f"**Model:** `{summary.get('model_id', 'N/A')}` | **Experiment:** `{selected_exp}`"
+        )
 
         sessions = list_sessions(conn, experiment_id=selected_exp)
         st.subheader("Phase Timeline")
@@ -1303,6 +1462,7 @@ def render_dashboard_page(
         turns_with_errors = []
         for s in sessions:
             from core.experiments import get_turns
+
             turns = get_turns(conn, session_id=s["id"])
             for t in turns:
                 if t.get("error"):
@@ -1324,6 +1484,7 @@ def render_dashboard_page(
             persistence_data = []
             for s in sessions:
                 from core.memory import list_memory_events as _lme
+
                 events = _lme(conn, session_id=s["id"])
                 active = sum(1 for e in events if e.get("status") == "active")
                 quarantined = sum(1 for e in events if e.get("status") == "quarantined")
@@ -1373,6 +1534,7 @@ def render_dashboard_page(
                 with drill_col1:
                     st.markdown("**Turns**")
                     from core.experiments import get_turns
+
                     turns = get_turns(conn, session_id=selected_session)
                     if turns:
                         st.dataframe(
@@ -1392,6 +1554,7 @@ def render_dashboard_page(
                 with drill_col2:
                     st.markdown("**Memory Events**")
                     from core.memory import list_memory_events as _lme2
+
                     events = _lme2(conn, session_id=selected_session)
                     if events:
                         st.dataframe(
@@ -1415,6 +1578,7 @@ def render_dashboard_page(
 # Archive Page
 # ---------------------------------------------------------------------------
 
+
 def render_archive_page(
     archives: list[dict[str, Any]] | None = None,
 ) -> None:
@@ -1430,7 +1594,11 @@ def render_archive_page(
 
     st.title("Archive")
 
-    search = st.text_input("Search archives", key="archive_search", placeholder="Search by experiment, model, poison, mitigation, or date")
+    search = st.text_input(
+        "Search archives",
+        key="archive_search",
+        placeholder="Search by experiment, model, poison, mitigation, or date",
+    )
 
     if archives is None:
         archives = []
@@ -1454,7 +1622,11 @@ def render_archive_page(
         term = search.lower()
         filtered = []
         for a in archives:
-            exp = experiment_meta.get(a.get("experiment_id")) if a.get("experiment_id") else None
+            exp = (
+                experiment_meta.get(a.get("experiment_id"))
+                if a.get("experiment_id")
+                else None
+            )
             match = False
             if term in (str(a.get("experiment_id") or "").lower()):
                 match = True
@@ -1482,7 +1654,10 @@ def render_archive_page(
                 {
                     "id": a.get("id"),
                     "experiment_id": a.get("experiment_id"),
-                    "model": (experiment_meta.get(a.get("experiment_id"), {}) or {}).get("model_id") or "N/A",
+                    "model": (
+                        experiment_meta.get(a.get("experiment_id"), {}) or {}
+                    ).get("model_id")
+                    or "N/A",
                     "path": a.get("path"),
                     "size_bytes": a.get("size_bytes"),
                     "status": a.get("status"),
@@ -1494,7 +1669,11 @@ def render_archive_page(
             key="archive_table",
         )
     else:
-        st.info("No archives found." if archives else "No archives yet. Export an experiment to create one.")
+        st.info(
+            "No archives found."
+            if archives
+            else "No archives yet. Export an experiment to create one."
+        )
 
     st.subheader("Archive Operations")
     if available_experiment_ids:
@@ -1523,7 +1702,11 @@ def render_archive_page(
                 if a.get("path") == selected_archive:
                     selected_archive_obj = a
                     break
-            selected_exp_id = selected_archive_obj.get("experiment_id") if selected_archive_obj else None
+            selected_exp_id = (
+                selected_archive_obj.get("experiment_id")
+                if selected_archive_obj
+                else None
+            )
 
             col_verify, col_export, col_restore = st.columns(3)
 
@@ -1542,13 +1725,20 @@ def render_archive_page(
                 if st.button("Export Experiment", key="archive_export_btn"):
                     if selected_exp_id:
                         try:
-                            export_result = export_experiment(selected_exp_id, config=config)
-                            st.success(f"Re-exported experiment {selected_exp_id}: {export_result['path']}")
+                            export_result = export_experiment(
+                                selected_exp_id, config=config
+                            )
+                            st.success(
+                                f"Re-exported experiment {selected_exp_id}: {export_result['path']}"
+                            )
                             if export_result.get("files"):
                                 with st.expander("Export files", expanded=False):
                                     st.dataframe(
                                         [
-                                            {"name": f["name"], "size_bytes": f["size_bytes"]}
+                                            {
+                                                "name": f["name"],
+                                                "size_bytes": f["size_bytes"],
+                                            }
                                             for f in export_result["files"]
                                         ],
                                         use_container_width=True,

@@ -1,6 +1,0 @@
-def new_id(prefix: str = "") -> str: what is prefix
-
-what is byte string and hex digest
-
-
-
