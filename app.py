@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-# Import sys for path manipulation and stderr output
+# Import standard-library helpers for access control and path handling
+import hmac
+import os
 import sys
 
 # Import Path for filesystem path operations
@@ -25,6 +27,23 @@ def _streamlit_available() -> bool:
     except ImportError:
         # Streamlit is not installed
         return False
+
+
+def _require_access(st: object) -> None:
+    """Require APP_PASSWORD when the app is exposed beyond a trusted machine."""
+    password = os.getenv("APP_PASSWORD")
+    if not password:
+        return
+    if st.session_state.get("authenticated"):
+        return
+    st.title("Agentic AI Security Lab")
+    entered = st.text_input("Access password", type="password")
+    if st.button("Unlock"):
+        if hmac.compare_digest(entered, password):
+            st.session_state.authenticated = True
+            st.rerun()
+        st.error("Invalid access password.")
+    st.stop()
 
 
 def ensure_databases() -> tuple[str, str]:
@@ -93,6 +112,7 @@ def main() -> None:
 
     # Configure the Streamlit page layout (title and wide layout)
     st.set_page_config(page_title="Agentic AI Security Lab", layout="wide")
+    _require_access(st)
 
     # Ensure both databases are initialized and get their paths
     models_db, lab_db = ensure_databases()

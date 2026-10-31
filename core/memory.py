@@ -48,23 +48,23 @@ def _iso_expiry(value: str | datetime | None) -> str | None:
 
 # Set of provenance categories considered "trusted" (safe to read in trusted policy mode)
 _TRUSTED_PROVENANCE = {
-    "explicit",       # Explicitly written by experiment operator
-    "trusted",        # Trusted system memory
-    "system",         # System-generated memory
-    "tool",           # Results from approved tool calls
-    "baseline",       # Baseline phase memory
+    "explicit",  # Explicitly written by experiment operator
+    "trusted",  # Trusted system memory
+    "system",  # System-generated memory
+    "tool",  # Results from approved tool calls
+    "baseline",  # Baseline phase memory
     "retrieved_trusted",  # Retrieved and trusted document
     "assistant_summary",  # Conversation summary from assistant
 }
 # Set of provenance categories considered "untrusted" (may contain poison/injection)
 _UNTRUSTED_PROVENANCE = {
-    "untrusted",        # Untrusted user source
-    "untrusted_source", # Untrusted source
-    "poison",           # Poisoned memory
-    "poisoned",         # Poisoned memory (alternate form)
-    "canary",           # Canary marker
-    "tool_untrusted",   # Tool result from untrusted source
-    "user_untrusted",   # User-supplied untrusted content
+    "untrusted",  # Untrusted user source
+    "untrusted_source",  # Untrusted source
+    "poison",  # Poisoned memory
+    "poisoned",  # Poisoned memory (alternate form)
+    "canary",  # Canary marker
+    "tool_untrusted",  # Tool result from untrusted source
+    "user_untrusted",  # User-supplied untrusted content
 }
 # Set of memory operations that represent "fact" writes (vs. reads/deletes)
 _FACT_OPERATIONS = {"write", "update"}
@@ -115,20 +115,32 @@ def memory_snapshot_hash(
 ) -> str:
     """Compute a SHA-256 hash of the canonical active memory state for a namespace."""
     # Build query clauses based on whether inactive entries should be included
-    clauses = ["s.memory_namespace = ?", "m.status = 'active'", "m.operation IN ('write', 'update')"]
+    clauses = [
+        "s.memory_namespace = ?",
+        "m.status = 'active'",
+        "m.operation IN ('write', 'update')",
+    ]
     values: list[Any] = [namespace]
     if include_inactive:
         # When including inactive, only filter by namespace and operation (ignore status)
         clauses = ["s.memory_namespace = ?", "m.operation IN ('write', 'update')"]
-    # Query all active memory events for the namespace, ordered for deterministic hashing
+    # Hash only the latest event for each key so superseded history does not change state hashes.
     rows = connection.execute(
         f"""
-        SELECT m.memory_key, m.value_json, m.provenance, m.confidence,
-               m.expires_at, m.status
-        FROM memory_events m
-        JOIN sessions s ON s.id = m.session_id
-        WHERE {' AND '.join(clauses)}
-        ORDER BY m.memory_key, m.created_at, m.id
+        SELECT memory_key, value_json, provenance, confidence, expires_at, status
+        FROM (
+            SELECT m.memory_key, m.value_json, m.provenance, m.confidence,
+                   m.expires_at, m.status,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY m.memory_key
+                       ORDER BY m.created_at DESC, m.id DESC
+                   ) AS row_number
+            FROM memory_events m
+            JOIN sessions s ON s.id = m.session_id
+            WHERE {' AND '.join(clauses)}
+        ) latest
+        WHERE row_number = 1
+        ORDER BY memory_key
         """,
         values,
     ).fetchall()
@@ -158,7 +170,11 @@ def write_memory(
     if not key:
         raise ValueError("memory key is required")
     # Validate that confidence is a finite number between 0 and 1
-    if not isinstance(confidence, (int, float)) or confidence != confidence or not 0 <= float(confidence) <= 1:
+    if (
+        not isinstance(confidence, (int, float))
+        or confidence != confidence
+        or not 0 <= float(confidence) <= 1
+    ):
         raise ValueError("confidence must be a finite value between 0 and 1")
     # Validate the operation type
     if operation not in {"read", "write", "update", "delete", "quarantine"}:
@@ -266,6 +282,8 @@ def write_document_memory(
 
 def ensure_document_index(connection: sqlite3.Connection) -> bool:
     """Create or rebuild the FTS5 index for memory search. Returns True on success."""
+    if getattr(connection, "is_postgres", False):
+        return False
     try:
         # Create the FTS5 virtual table if it doesn't exist
         connection.execute(
@@ -274,17 +292,18 @@ def ensure_document_index(connection: sqlite3.Connection) -> bool:
         # Clear any existing index entries
         connection.execute("DELETE FROM memory_fts")
         # Fetch all write/update memory events to index
-        rows = connection.execute(
-            """
+        rows = connection.execute("""
             SELECT rowid AS source_rowid, id, memory_key, COALESCE(value_json, '')
             FROM memory_events
             WHERE operation IN ('write', 'update')
-            """
-        ).fetchall()
+            """).fetchall()
         # Bulk insert into the FTS table
         connection.executemany(
             "INSERT INTO memory_fts(rowid, memory_key, value_text, memory_id) VALUES (?, ?, ?, ?)",
-            [(row["source_rowid"], row["memory_key"], row[3], row["id"]) for row in rows],
+            [
+                (row["source_rowid"], row["memory_key"], row[3], row["id"])
+                for row in rows
+            ],
         )
         connection.commit()
         return True
@@ -308,23 +327,33 @@ def search_memory(
     if not query.strip():
         return []
     # Check if the FTS5 index table exists
-    fts_exists = connection.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_fts'"
-    ).fetchone()
+    fts_exists = None
+    if not getattr(connection, "is_postgres", False):
+        fts_exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_fts'"
+        ).fetchone()
     if fts_exists:
         try:
+            fts_clauses = [
+                "s.memory_namespace = ?",
+                "memory_fts MATCH ?",
+                "m.operation IN ('write', 'update')",
+            ]
+            fts_values: list[Any] = [namespace, query]
+            if policy in {"active", "trusted", "untrusted"}:
+                fts_clauses.append("m.status = 'active'")
             # Try FTS full-text search first
             fts_rows = connection.execute(
-                """
+                f"""
                 SELECT m.*
                 FROM memory_fts f
                 JOIN memory_events m ON m.id = f.memory_id
                 JOIN sessions s ON s.id = m.session_id
-                WHERE s.memory_namespace = ? AND memory_fts MATCH ?
+                WHERE {' AND '.join(fts_clauses)}
                 ORDER BY m.created_at DESC, m.id DESC
                 LIMIT ?
                 """,
-                (namespace, query, max(1, int(limit))),
+                [*fts_values, max(1, int(limit))],
             ).fetchall()
             if fts_rows:
                 rows = fts_rows
@@ -344,7 +373,13 @@ def search_memory(
             ORDER BY m.created_at DESC, m.id DESC
             LIMIT ?
             """,
-            (namespace, policy, f"%{query.lower()}%", f"%{query.lower()}%", max(1, int(limit))),
+            (
+                namespace,
+                policy,
+                f"%{query.lower()}%",
+                f"%{query.lower()}%",
+                max(1, int(limit)),
+            ),
         ).fetchall()
     result = []
     for row in rows:
@@ -378,7 +413,7 @@ def read_memory(
     """Read memory entries allowed by the selected policy."""
     if policy not in {"active", "all", "trusted", "untrusted"}:
         raise ValueError("policy must be active, all, trusted, or untrusted")
-    clauses = ["s.memory_namespace = ?"]
+    clauses = ["s.memory_namespace = ?", "m.operation IN ('write', 'update')"]
     values: list[Any] = [namespace]
     # For "active" policy: only active write/update entries
     if policy == "active":
@@ -396,7 +431,12 @@ def read_memory(
         LIMIT ?
         """,
         # For trusted/untrusted policies, fetch extra rows (4x) to account for provenance filtering
-        [*values, max(1, int(limit) * 4 if policy in {"trusted", "untrusted"} else int(limit))],
+        [
+            *values,
+            max(
+                1, int(limit) * 4 if policy in {"trusted", "untrusted"} else int(limit)
+            ),
+        ],
     ).fetchall()
     result = []
     for row in rows:
@@ -425,7 +465,11 @@ def get_memory(
     include_inactive: bool = False,
 ) -> dict[str, Any] | None:
     """Get the latest memory entry for a key in a namespace, or None if not found."""
-    clauses = ["s.memory_namespace = ?", "m.memory_key = ?", "m.operation IN ('write', 'update')"]
+    clauses = [
+        "s.memory_namespace = ?",
+        "m.memory_key = ?",
+        "m.operation IN ('write', 'update')",
+    ]
     values: list[Any] = [namespace, redact(key)]
     # Exclude inactive entries unless explicitly requested
     if not include_inactive:
@@ -554,8 +598,14 @@ def expire_memory(
     # Use provided datetime or current UTC time
     current = now or datetime.now(timezone.utc)
     # Build namespace clause if a namespace is specified
-    namespace_clause = "AND session_id IN (SELECT id FROM sessions WHERE memory_namespace = ?)" if namespace else ""
-    values: list[Any] = [current.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")]
+    namespace_clause = (
+        "AND session_id IN (SELECT id FROM sessions WHERE memory_namespace = ?)"
+        if namespace
+        else ""
+    )
+    values: list[Any] = [
+        current.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    ]
     if namespace:
         values.append(namespace)
     # Update status to 'expired' for entries that are currently active and past their expiry
@@ -630,7 +680,3 @@ __all__ = [
     "write_memory",
     "write_summary_memory",
 ]
-
-
-
-

@@ -318,6 +318,25 @@ class AgentRunner:
             result.append(item)
         return result
 
+    @staticmethod
+    def _tool_call_message(tool_calls: list[dict[str, Any]]) -> dict[str, Any]:
+        """Build the assistant message required before tool result messages."""
+        return {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": call.get("id"),
+                    "type": "function",
+                    "function": {
+                        "name": call.get("name"),
+                        "arguments": call.get("arguments") or "{}",
+                    },
+                }
+                for call in tool_calls
+            ],
+        }
+
     def _response_usage(self, response: Any) -> dict[str, int]:
         """Extract token usage statistics from a model response."""
         # Handle dict-style responses
@@ -650,33 +669,58 @@ class AgentRunner:
             # Start timing the model API call for latency measurement
             started = time.perf_counter()
             try:
-                # Send the request to the model API and get the raw response
-                response = self._get_client().chat.completions.create(
-                    **provider_request
-                )
-                # Extract text content from the response
+                client = self._get_client()
+                request_messages = list(messages)
+                response = client.chat.completions.create(**provider_request)
                 response_content = self._response_content(response)
-                # Extract any tool call requests from the response
                 tool_calls = self._response_tool_calls(response)
                 tool_results: list[dict[str, Any]] = []
-                # Execute each requested tool call and collect results
-                for call in tool_calls:
-                    name = call.get("name")
-                    arguments = call.get("arguments")
-                    try:
-                        output = self._execute_tool(name, arguments)
-                        tool_results.append(
-                            {"call_id": call.get("id"), "name": name, "output": output}
-                        )
-                    except Exception as exc:
-                        # Record tool execution errors rather than failing the entire turn
-                        tool_results.append(
-                            {
+                tool_responses: list[dict[str, Any]] = []
+                for _ in range(4):
+                    if not tool_calls:
+                        break
+                    request_messages.extend([self._tool_call_message(tool_calls)])
+                    round_results: list[dict[str, Any]] = []
+                    for call in tool_calls:
+                        name = call.get("name")
+                        arguments = call.get("arguments")
+                        try:
+                            output = self._execute_tool(name, arguments)
+                            result = {
                                 "call_id": call.get("id"),
                                 "name": name,
+                                "arguments": arguments,
+                                "output": output,
+                            }
+                            tool_content = json_dumps(output)
+                        except Exception as exc:
+                            result = {
+                                "call_id": call.get("id"),
+                                "name": name,
+                                "arguments": arguments,
                                 "error": f"{type(exc).__name__}: {exc}",
                             }
+                            tool_content = result["error"]
+                        tool_results.append(result)
+                        round_results.append(result)
+                        tool_responses.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": call.get("id"),
+                                "name": name,
+                                "content": tool_content,
+                            }
                         )
+                    request_messages.extend(tool_responses[-len(round_results) :])
+                    followup_request = {
+                        **provider_request,
+                        "messages": request_messages,
+                    }
+                    response = client.chat.completions.create(**followup_request)
+                    response_content = self._response_content(response)
+                    tool_calls = self._response_tool_calls(response)
+                if tool_calls:
+                    raise RuntimeError("tool call limit exceeded")
                 # Serialize the full response for evidence storage (redacted)
                 serialized_response = self._serialize_response(response)
                 # Attach tool results to the serialized response
@@ -723,6 +767,20 @@ class AgentRunner:
             estimated_cost = self._estimate_cost(model, usage)
             # Begin a transaction to persist the assistant's successful turn
             connection.execute("BEGIN")
+            for tool_result in tool_results:
+                append_turn(
+                    connection,
+                    session_id,
+                    role="tool",
+                    content=json_dumps(
+                        tool_result.get("output", tool_result.get("error"))
+                    ),
+                    phase=turn_phase,
+                    tool_name=tool_result.get("name"),
+                    tool_input=tool_result.get("arguments"),
+                    tool_output=tool_result.get("output", tool_result.get("error")),
+                    commit=False,
+                )
             # Persist the assistant's response turn with all evidence
             assistant_turn_id = append_turn(
                 connection,

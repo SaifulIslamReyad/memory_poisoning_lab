@@ -139,6 +139,11 @@ def append_turn(
     turn_phase = phase or session["phase"]
     if turn_phase not in PHASES:
         raise ValueError(f"phase must be one of {sorted(PHASES)}")
+    if getattr(connection, "is_postgres", False):
+        connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(?))",
+            (session_id,),
+        )
     # Compute the next sequence number for this session
     sequence = connection.execute(
         "SELECT COALESCE(MAX(sequence), -1) + 1 FROM turns WHERE session_id = ?",
@@ -181,7 +186,9 @@ def append_turn(
     return turn_id
 
 
-def get_experiment(connection: sqlite3.Connection, experiment_id: str) -> dict[str, Any] | None:
+def get_experiment(
+    connection: sqlite3.Connection, experiment_id: str
+) -> dict[str, Any] | None:
     """Fetch a single experiment by ID, or None if not found."""
     row = connection.execute(
         "SELECT * FROM experiments WHERE id = ?", (experiment_id,)
@@ -232,9 +239,13 @@ def list_experiments(
     return result
 
 
-def get_session(connection: sqlite3.Connection, session_id: str) -> dict[str, Any] | None:
+def get_session(
+    connection: sqlite3.Connection, session_id: str
+) -> dict[str, Any] | None:
     """Fetch a single session by ID, or None if not found."""
-    row = connection.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    row = connection.execute(
+        "SELECT * FROM sessions WHERE id = ?", (session_id,)
+    ).fetchone()
     return dict(row) if row else None
 
 
@@ -275,7 +286,12 @@ def get_turn(connection: sqlite3.Connection, turn_id: str) -> dict[str, Any] | N
         return None
     item = dict(row)
     # Decode JSON columns back to Python objects
-    for field in ("tool_input_json", "tool_output_json", "model_request_json", "model_response_json"):
+    for field in (
+        "tool_input_json",
+        "tool_output_json",
+        "model_request_json",
+        "model_response_json",
+    ):
         raw = item.pop(field, None)
         if raw:
             try:
@@ -308,12 +324,15 @@ def get_turns(
     join = " JOIN sessions s ON s.id = t.session_id" if experiment_id else ""
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
     rows = connection.execute(
-        f"SELECT t.* FROM turns t{join}{where} ORDER BY t.session_id, t.sequence", values
+        f"SELECT t.* FROM turns t{join}{where} ORDER BY t.session_id, t.sequence",
+        values,
     ).fetchall()
     return [_decode_turn(row) for row in rows]
 
 
-def get_session_messages(connection: sqlite3.Connection, session_id: str) -> list[dict[str, str]]:
+def get_session_messages(
+    connection: sqlite3.Connection, session_id: str
+) -> list[dict[str, str]]:
     """Return the conversation messages for a session (system/user/assistant roles only)."""
     rows = connection.execute(
         "SELECT role, content FROM turns WHERE session_id = ? AND role IN ('system', 'user', 'assistant') AND content IS NOT NULL ORDER BY sequence",
@@ -334,7 +353,11 @@ def transition_session(
     if phase not in PHASES:
         raise ValueError(f"phase must be one of {sorted(PHASES)}")
     # Optionally include a memory_snapshot_hash update (uses COALESCE to preserve existing if None)
-    hash_clause = ", memory_snapshot_hash = COALESCE(?, memory_snapshot_hash)" if memory_snapshot_hash else ""
+    hash_clause = (
+        ", memory_snapshot_hash = COALESCE(?, memory_snapshot_hash)"
+        if memory_snapshot_hash
+        else ""
+    )
     values: list[Any] = [phase]
     if memory_snapshot_hash:
         values.append(memory_snapshot_hash)
@@ -361,12 +384,25 @@ def update_experiment_status(
     if status not in {"created", "running", "completed", "failed", "archived"}:
         raise ValueError("invalid experiment status")
     # Verify the experiment exists
-    if connection.execute("SELECT COUNT(*) FROM experiments WHERE id = ?", (experiment_id,)).fetchone()[0] == 0:
+    if (
+        connection.execute(
+            "SELECT COUNT(*) FROM experiments WHERE id = ?", (experiment_id,)
+        ).fetchone()[0]
+        == 0
+    ):
         raise KeyError(f"unknown experiment: {experiment_id}")
     # Update status; set ended_at when transitioning to a terminal state
     connection.execute(
         "UPDATE experiments SET status = ?, ended_at = COALESCE(?, ended_at) WHERE id = ?",
-        (status, ended_at or utc_now() if status in {"completed", "failed", "archived"} else None, experiment_id),
+        (
+            status,
+            (
+                ended_at or utc_now()
+                if status in {"completed", "failed", "archived"}
+                else None
+            ),
+            experiment_id,
+        ),
     )
     if commit:
         connection.commit()
@@ -412,7 +448,9 @@ def delete_experiment(
     Returns True if experiment was found and deleted, False if not found.
     """
     # Check if the experiment exists before attempting deletion
-    cursor = connection.execute("SELECT id FROM experiments WHERE id = ?", (experiment_id,))
+    cursor = connection.execute(
+        "SELECT id FROM experiments WHERE id = ?", (experiment_id,)
+    )
     if cursor.fetchone() is None:
         return False
     # Foreign key cascades should handle all related data automatically
@@ -425,7 +463,12 @@ def delete_experiment(
 def _decode_turn(row: sqlite3.Row) -> dict[str, Any]:
     """Decode JSON columns in a turn row back to Python objects."""
     item = dict(row)
-    for field in ("tool_input_json", "tool_output_json", "model_request_json", "model_response_json"):
+    for field in (
+        "tool_input_json",
+        "tool_output_json",
+        "model_request_json",
+        "model_response_json",
+    ):
         raw = item.pop(field, None)
         if raw:
             try:
@@ -433,7 +476,6 @@ def _decode_turn(row: sqlite3.Row) -> dict[str, Any]:
             except (TypeError, ValueError):
                 item[field.removesuffix("_json")] = raw
     return item
-
 
 
 __all__ = [

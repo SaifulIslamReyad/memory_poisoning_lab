@@ -1,0 +1,14 @@
+# Groq-compatible model API key
+GROQ_API_KEY=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
+
+# Optional password for hosted deployments
+APP_PASSWORD=reyadshams
+
+# Optional Neon PostgreSQL connection string. Leave blank for local SQLite.
+DATABASE_URL=postgresql://postgres:cartfillbdgonimia@db.kpizwpojiaoonpourqyo.supabase.co:5432/postgres
+
+GROQ_BASE_URL=https://api.groq.com/openai/v1
+GROQ_REQUEST_TIMEOUT=30
+LAB_MAX_ROWS=100
+LAB_MAX_RESULT_BYTES=1048576
+LAB_MAX_QUERY_STEPS=100000

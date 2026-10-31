@@ -498,6 +498,13 @@ def verify_archive(archive_path: str | Path) -> dict[str, Any]:
             "errors": ["missing or unsafe manifest.json"],
             "manifest": None,
         }
+    for entry in root.iterdir():
+        if entry.name == "manifest.json":
+            continue
+        if entry.is_symlink():
+            errors.append(f"symlink is not allowed: {entry.name}")
+        elif entry.is_dir():
+            errors.append(f"nested directories are not allowed: {entry.name}")
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:

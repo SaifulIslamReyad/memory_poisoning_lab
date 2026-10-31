@@ -277,6 +277,22 @@ def _validate_postgres_query(sql: str) -> str:
     return query.rstrip(";").rstrip()
 
 
+def _validate_postgres_schema_access(query: str, schema: str) -> None:
+    """Reject structurally qualified tables outside the experiment schema."""
+    try:
+        from sqlglot import exp, parse_one
+
+        expression = parse_one(query, read="postgres")
+    except Exception as exc:
+        raise UnsafeSQLError("query could not be parsed safely") from exc
+    for table in expression.find_all(exp.Table):
+        database = table.args.get("db")
+        if database is not None and database.name != schema:
+            raise UnsafeSQLError(
+                "query references a table outside the experiment schema"
+            )
+
+
 def execute_postgres_read_only_sql(
     database_url: str,
     schema: str,
@@ -290,6 +306,7 @@ def execute_postgres_read_only_sql(
     if max_rows < 1 or max_result_bytes < 1:
         raise ValueError("query limits must be positive")
     query = _validate_postgres_query(sql)
+    _validate_postgres_schema_access(query, schema)
     quoted_schema = _quote_postgres_identifier(schema)
     connection = PostgresConnection(database_url, readonly=True, timeout=timeout)
     try:

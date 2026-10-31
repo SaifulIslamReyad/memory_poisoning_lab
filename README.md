@@ -69,6 +69,7 @@ Set `DATABASE_URL` to a Neon PostgreSQL connection string to use Neon for the mo
 ```text
 DATABASE_URL=postgresql://user:password@ep-example.neon.tech/lab?sslmode=require
 GROQ_API_KEY=your_api_key_here
+APP_PASSWORD=choose-a-long-random-password
 ```
 
 Install the PostgreSQL dependency and start the app normally:
@@ -81,6 +82,8 @@ streamlit run app.py
 When `DATABASE_URL` is set, the agent SQL tool creates an isolated `sandbox_<experiment-id>` schema in Neon, loads the e-commerce fixture there, and executes only bounded read-only `SELECT`/`WITH` queries. The local SQLite files remain the default when `DATABASE_URL` is absent.
 
 Archives still include a portable SQLite snapshot of experiment evidence for compatibility. Neon sandbox data is additionally exported as `sandbox.json`. Keep the Neon URL and `GROQ_API_KEY` in deployment secrets; never commit them.
+
+Set `APP_PASSWORD` when hosting the app online. Local access remains open when this variable is unset, but a deployed security lab should configure it or use an external identity-aware proxy.
 
 ---
 

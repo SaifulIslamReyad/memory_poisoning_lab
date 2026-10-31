@@ -35,58 +35,6 @@ def _get_model_capabilities(models: list[dict[str, Any]], model_id: str | None):
     return None
 
 
-def _sync_session_state(
-    model_ids: list[str],
-    experiment_ids: list[str],
-    session_ids: set[str] | None = None,
-) -> None:
-    """Synchronize Streamlit state with valid selections and clear stale IDs."""
-    import streamlit as st
-
-    if "chat_model_select" in st.session_state:
-        selected_model = st.session_state.chat_model_select
-        if selected_model not in model_ids:
-            st.session_state.chat_model_select = model_ids[0] if model_ids else None
-
-    if "chat_experiment_select" in st.session_state:
-        selected_exp = st.session_state.chat_experiment_select
-        if selected_exp not in experiment_ids:
-            st.session_state.chat_experiment_select = (
-                experiment_ids[0] if experiment_ids else None
-            )
-        else:
-            st.session_state.chat_experiment_id = selected_exp
-
-    if "chat_experiment_id" in st.session_state:
-        if st.session_state.chat_experiment_id not in experiment_ids:
-            st.session_state.chat_experiment_id = None
-            st.session_state.chat_session_id = None
-            st.session_state.chat_transcript_session_id = None
-            st.session_state.chat_messages = []
-            if "chat_session_select" in st.session_state:
-                del st.session_state.chat_session_select
-
-    if "chat_session_select" in st.session_state:
-        selected_session = st.session_state.chat_session_select
-        valid_sessions = session_ids or set()
-        if selected_session not in valid_sessions:
-            st.session_state.chat_session_select = None
-            st.session_state.chat_session_id = None
-            st.session_state.chat_transcript_session_id = None
-            st.session_state.chat_messages = []
-        else:
-            st.session_state.chat_session_id = selected_session
-
-    if "chat_session_id" in st.session_state:
-        valid_sessions = session_ids or set()
-        if st.session_state.chat_session_id not in valid_sessions:
-            st.session_state.chat_session_id = None
-            st.session_state.chat_transcript_session_id = None
-            st.session_state.chat_messages = []
-            if "chat_session_select" in st.session_state:
-                del st.session_state.chat_session_select
-
-
 def _load_transcript_turns(session_id: str) -> list[dict[str, Any]]:
     """Load transcript turns from SQLite for a session."""
     from core.config import load_config, redact
@@ -406,7 +354,6 @@ def render_chat_page(
         return
     import streamlit as st
 
-    from core.database import connect_sqlite
     from core.experiments import (
         PHASES,
         create_experiment,
@@ -414,7 +361,6 @@ def render_chat_page(
         delete_experiment,
         delete_session,
         finish_experiment,
-        get_experiment,
         get_session,
         get_turns,
         list_sessions,
@@ -431,11 +377,8 @@ def render_chat_page(
     from core.detections import run_detectors
     from core.mitigations import STRATEGIES, apply_mitigation
     from core.config import load_config
-    from core.catalog import get_model as get_model_from_catalog
-    from core.models import ModelCapabilities, validate_request
-    from core.agent import AgentRunner, create_default_tool_registry
+    from core.models import validate_request
     from core.tools import prepare_sandbox
-    from core.config import LabConfig
 
     st.title("Chat Console")
 
