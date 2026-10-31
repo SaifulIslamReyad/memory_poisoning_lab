@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import json_dumps, utc_now          # json_dumps serializes safely, utc_now gives a Z-normalized timestamp
-from .database import connect_sqlite, initialize_models_db, transaction
+from .database import connect_sqlite, initialize_models_db, is_postgres_target, transaction
 
 # Default endpoint for the Groq OpenAI-compatible model listing API
 CATALOG_URL = "https://api.groq.com/openai/v1/models"
@@ -214,7 +214,11 @@ def import_model_snapshot(
     owns_connection = connection is None                # track whether we need to close the connection later
     if connection is None:
         # Default database location is sibling "models.sqlite" to the snapshot
-        database = Path(db_path) if db_path else path.parent / "models.sqlite"
+        database = (
+            db_path
+            if db_path and is_postgres_target(db_path)
+            else Path(db_path) if db_path else path.parent / "models.sqlite"
+        )
         connection = initialize_models_db(database)     # ensure the schema exists
     try:
         with path.open("r", encoding="utf-8") as handle:  # open the snapshot JSON for reading
@@ -262,7 +266,9 @@ def sync_models(
     owns_connection = connection is None                  # track ownership for cleanup
     if connection is None:
         database = (
-            Path(db_path).expanduser().resolve()         # use caller-provided path if given
+            db_path
+            if db_path and is_postgres_target(db_path)
+            else Path(db_path).expanduser().resolve()    # use caller-provided path if given
             if db_path
             else Path(__file__).resolve().parents[1] / "data" / "models.sqlite"  # default to repo data/ dir
         )

@@ -1,11 +1,11 @@
-"""SQLite connection, schema, and migration helpers."""
+"""Database connections, schemas, and migrations for SQLite or PostgreSQL."""
 
 from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 # Schema version for the models catalog database
 MODEL_SCHEMA_VERSION = 1
@@ -14,6 +14,110 @@ LAB_SCHEMA_VERSION = 1
 # Migration scripts keyed by target version (empty since both are at version 1)
 MODEL_MIGRATIONS: dict[int, str] = {}
 LAB_MIGRATIONS: dict[int, str] = {}
+
+
+class _PostgresRow(dict):
+    """Mapping row that also preserves SQLite-style numeric indexing."""
+
+    def __getitem__(self, key: Any) -> Any:
+        if isinstance(key, int):
+            return tuple(self.values())[key]
+        return super().__getitem__(key)
+
+
+def _postgres_row(cursor: Any, values: tuple[Any, ...]) -> _PostgresRow:
+    return _PostgresRow(zip((column.name for column in cursor.description), values))
+
+
+def _qmark_to_postgres(sql: str) -> str:
+    """Convert qmark placeholders outside quoted strings to psycopg placeholders."""
+    result: list[str] = []
+    quote: str | None = None
+    index = 0
+    while index < len(sql):
+        character = sql[index]
+        if quote:
+            result.append(character)
+            if character == quote:
+                if index + 1 < len(sql) and sql[index + 1] == quote:
+                    result.append(sql[index + 1])
+                    index += 2
+                    continue
+                quote = None
+        elif character in {"'", '"', "`"}:
+            quote = character
+            result.append(character)
+        elif character == "?":
+            result.append("%s")
+        else:
+            result.append(character)
+        index += 1
+    return "".join(result)
+
+
+class PostgresConnection:
+    """Small psycopg compatibility wrapper used by the existing repositories."""
+
+    is_postgres = True
+
+    def __init__(self, url: str, *, readonly: bool = False, timeout: float = 30.0):
+        try:
+            import psycopg
+        except ImportError as exc:
+            raise RuntimeError(
+                "psycopg is required for PostgreSQL; install requirements.txt"
+            ) from exc
+
+        self._connection = psycopg.connect(
+            url,
+            autocommit=True,
+            connect_timeout=max(1, int(timeout)),
+            row_factory=_postgres_row,
+        )
+        self._connection.execute(
+            "SELECT set_config('statement_timeout', %s, false)",
+            (str(max(1, int(timeout * 1000))),),
+        )
+        if readonly:
+            self._connection.execute("SET default_transaction_read_only = on")
+
+    def execute(self, sql: str, parameters: Any = ()) -> Any:
+        return self._connection.execute(_qmark_to_postgres(sql), parameters)
+
+    def executemany(self, sql: str, parameters: Any) -> Any:
+        return self._connection.executemany(_qmark_to_postgres(sql), parameters)
+
+    def executescript(self, script: str) -> None:
+        statements = [
+            statement.strip() for statement in script.split(";") if statement.strip()
+        ]
+        for statement in statements:
+            self.execute(statement)
+
+    def commit(self) -> None:
+        self._connection.commit()
+
+    def rollback(self) -> None:
+        self._connection.rollback()
+
+    def close(self) -> None:
+        self._connection.close()
+
+    @property
+    def in_transaction(self) -> bool:
+        return self._connection.info.transaction_status != 0
+
+
+def _is_postgres_target(target: str | Path) -> bool:
+    return isinstance(target, str) and target.lower().startswith(
+        ("postgresql://", "postgres://")
+    )
+
+
+def is_postgres_target(target: str | Path) -> bool:
+    """Return whether a database target is a PostgreSQL connection URL."""
+    return _is_postgres_target(target)
+
 
 # --- Models Catalog Schema ---
 # Stores normalized Groq model metadata with child tables for modalities, pricing,
@@ -220,18 +324,19 @@ CREATE INDEX IF NOT EXISTS idx_archives_experiment ON archives(experiment_id);
 """
 
 
-
 def connect_sqlite(
     path: str | Path,
     *,
     readonly: bool = False,
     timeout: float = 30.0,
-) -> sqlite3.Connection:
-    """Open a configured SQLite connection.
+) -> Any:
+    """Open a configured SQLite or PostgreSQL connection.
 
-    Read-only connections use a URI so the target database cannot be changed by
-    ordinary SQL. Every connection enables foreign keys and a busy timeout.
+    A PostgreSQL URL is routed to the Neon-compatible adapter. The historical
+    function name is retained so existing repositories remain compatible.
     """
+    if _is_postgres_target(path):
+        return PostgresConnection(str(path), readonly=readonly, timeout=timeout)
     # Resolve the path to an absolute path
     database_path = Path(path).expanduser().resolve()
     if readonly:
@@ -279,15 +384,13 @@ def _apply_schema(
     if version < 1:
         raise ValueError("schema version must be positive")
     # Ensure the schema_migrations tracking table exists
-    connection.execute(
-        """
+    connection.execute("""
         CREATE TABLE IF NOT EXISTS schema_migrations (
             name TEXT PRIMARY KEY,
             version INTEGER NOT NULL,
             applied_at TEXT NOT NULL
         )
-        """
-    )
+        """)
     # Check the currently applied version for this schema
     row = connection.execute(
         "SELECT version FROM schema_migrations WHERE name = ?", (name,)
@@ -304,14 +407,20 @@ def _apply_schema(
     # If starting fresh (version 0), apply the full schema
     if current == 0:
         connection.executescript(schema)
+        applied_at = (
+            "CURRENT_TIMESTAMP"
+            if getattr(connection, "is_postgres", False)
+            else "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
+        )
         connection.execute(
-            """
+            f"""
             INSERT INTO schema_migrations(name, version, applied_at)
-            VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            VALUES (?, ?, {applied_at})
             """,
             (name, version),
         )
-        connection.execute(f"PRAGMA user_version = {version}")
+        if not getattr(connection, "is_postgres", False):
+            connection.execute(f"PRAGMA user_version = {version}")
         connection.commit()
         return
     # Otherwise, apply migrations incrementally from current+1 to target version
@@ -322,17 +431,23 @@ def _apply_schema(
                 f"no migration registered for {name} version {migration_version}"
             )
         connection.executescript(migration)
+        applied_at = (
+            "CURRENT_TIMESTAMP"
+            if getattr(connection, "is_postgres", False)
+            else "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
+        )
         connection.execute(
-            """
+            f"""
             INSERT INTO schema_migrations(name, version, applied_at)
-            VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            VALUES (?, ?, {applied_at})
             ON CONFLICT(name) DO UPDATE SET
                 version = excluded.version,
                 applied_at = excluded.applied_at
             """,
             (name, migration_version),
         )
-        connection.execute(f"PRAGMA user_version = {migration_version}")
+        if not getattr(connection, "is_postgres", False):
+            connection.execute(f"PRAGMA user_version = {migration_version}")
         connection.commit()
 
 
@@ -340,23 +455,24 @@ def initialize_models_db(
     path: str | Path,
     *,
     version: int = MODEL_SCHEMA_VERSION,
-) -> sqlite3.Connection:
+) -> Any:
     """Initialize the models catalog database and return an open connection."""
     # Resolve the path and ensure parent directory exists
-    database_path = Path(path).expanduser().resolve()
-    database_path.parent.mkdir(parents=True, exist_ok=True)
+    database_path = (
+        path if _is_postgres_target(path) else Path(path).expanduser().resolve()
+    )
+    if not _is_postgres_target(path):
+        database_path.parent.mkdir(parents=True, exist_ok=True)
     # Open/create the database file
     connection = connect_sqlite(database_path)
     # Ensure schema_migrations table exists in this database
-    connection.execute(
-        """
+    connection.execute("""
         CREATE TABLE IF NOT EXISTS schema_migrations (
             name TEXT PRIMARY KEY,
             version INTEGER NOT NULL,
             applied_at TEXT NOT NULL
         )
-        """
-    )
+        """)
     # Apply the models schema (creates tables if they don't exist)
     _apply_schema(connection, MODEL_SCHEMA, "models", version, MODEL_MIGRATIONS)
     return connection
@@ -366,11 +482,14 @@ def initialize_lab_db(
     path: str | Path,
     *,
     version: int = LAB_SCHEMA_VERSION,
-) -> sqlite3.Connection:
+) -> Any:
     """Initialize the lab experiment database and return an open connection."""
     # Resolve the path and ensure parent directory exists
-    database_path = Path(path).expanduser().resolve()
-    database_path.parent.mkdir(parents=True, exist_ok=True)
+    database_path = (
+        path if _is_postgres_target(path) else Path(path).expanduser().resolve()
+    )
+    if not _is_postgres_target(path):
+        database_path.parent.mkdir(parents=True, exist_ok=True)
     # Open/create the database file
     connection = connect_sqlite(database_path)
     # Apply the lab schema (creates all evidence tables)
@@ -405,6 +524,7 @@ __all__ = [
     "MODEL_SCHEMA",
     "MODEL_SCHEMA_VERSION",
     "connect_sqlite",
+    "is_postgres_target",
     "initialize_databases",
     "initialize_lab_db",
     "initialize_models_db",

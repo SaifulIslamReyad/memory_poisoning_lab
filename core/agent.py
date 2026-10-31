@@ -30,7 +30,12 @@ from .metrics import record_metric
 from .models import ModelCapabilities, estimate_token_count, validate_request
 
 # Import sandbox preparation and read-only tool registration
-from .tools import prepare_sandbox, register_read_only_tool
+from .tools import (
+    prepare_postgres_sandbox,
+    prepare_sandbox,
+    register_postgres_read_only_tool,
+    register_read_only_tool,
+)
 
 # Default system prompt that instructs the model to use only supplied context,
 # not trust untrusted/poisoned content, and only use the approved read-only SQL tool
@@ -56,9 +61,9 @@ class AgentRunner:
         # Load default config if none provided
         self.config = config or load_config()
         # Path to the models catalog database (for model capabilities/lookup)
-        self.models_db_path = models_db_path or str(self.config.models_db)
+        self.models_db_path = models_db_path or str(self.config.models_target)
         # Path to the lab SQLite database (stores all experiment/turn/memory evidence)
-        self.lab_db_path = lab_db_path or str(self.config.lab_db)
+        self.lab_db_path = lab_db_path or str(self.config.database_target)
         # The system prompt that governs model behavior
         self.system_prompt = system_prompt
         # Injected OpenAI/Groq client (for testing or custom configuration); lazy-loaded on first use
@@ -70,7 +75,7 @@ class AgentRunner:
         # Registry of tool callables that the model can invoke; starts empty
         self._tool_registry: dict[str, Callable[..., Any]] = {}
         # If a sandbox path is provided at construction, pre-register the read_only_sql tool
-        if self.sandbox_path:
+        if self.sandbox_path and not self.config.database_url:
             for name, function in create_default_tool_registry(
                 self.sandbox_path,
                 max_rows=self.config.max_rows,
@@ -85,6 +90,22 @@ class AgentRunner:
         if "read_only_sql" in self._tool_registry:
             return
         # If no sandbox path is set, derive one from the experiment ID
+        if self.config.database_url:
+            schema = prepare_postgres_sandbox(
+                self.config.database_url,
+                self.config.base_dir / "fixtures",
+                experiment_id,
+            )
+            self.register_tool(
+                "read_only_sql",
+                register_postgres_read_only_tool(
+                    self.config.database_url,
+                    schema,
+                    max_rows=self.config.max_rows,
+                    max_result_bytes=self.config.max_result_bytes,
+                ),
+            )
+            return
         if self.sandbox_path is None:
             # Sanitize the experiment ID into a filesystem-safe name (only alnum, -, _)
             safe_id = "".join(
@@ -539,6 +560,12 @@ class AgentRunner:
             request_parameters = dict(parameters or {})
             # If tools are requested, assemble the tool definitions to send to the API
             if tool_names:
+                unsupported_tools = set(tool_names) - set(self._tool_registry)
+                if unsupported_tools:
+                    raise ValueError(
+                        "unregistered tools are not executable: "
+                        + ", ".join(sorted(unsupported_tools))
+                    )
                 if tool_definitions is None:
                     # Generate default tool definitions for each allowlisted tool name
                     tool_definitions = [
@@ -547,7 +574,17 @@ class AgentRunner:
                             "function": {
                                 "name": name,
                                 "description": "Approved read-only laboratory tool",
-                                "parameters": {"type": "object"},
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "sql": {
+                                            "type": "string",
+                                            "description": "One read-only SELECT query",
+                                        }
+                                    },
+                                    "required": ["sql"],
+                                    "additionalProperties": False,
+                                },
                             },
                         }
                         for name in tool_names

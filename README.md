@@ -27,6 +27,7 @@ Compare Groq-compatible models, create isolated experiment sessions, inject mark
 15. [Running and Validating](#running-and-validating)
 16. [Extension Points](#extension-points)
 17. [Programmatic Usage](#programmatic-usage)
+18. [Neon PostgreSQL](#neon-postgresql)
 
 ---
 
@@ -60,6 +61,26 @@ Compare Groq-compatible models, create isolated experiment sessions, inject mark
    ```
 
 On first launch, the application initializes `data/models.sqlite` and `data/lab.sqlite`. If the model database is empty, it imports the bundled `all_models_in_grok.json` snapshot.
+
+## Neon PostgreSQL
+
+Set `DATABASE_URL` to a Neon PostgreSQL connection string to use Neon for the model catalog, experiments, memory, detections, metrics, and mitigations:
+
+```text
+DATABASE_URL=postgresql://user:password@ep-example.neon.tech/lab?sslmode=require
+GROQ_API_KEY=your_api_key_here
+```
+
+Install the PostgreSQL dependency and start the app normally:
+
+```bash
+python3 -m pip install -r requirements.txt
+streamlit run app.py
+```
+
+When `DATABASE_URL` is set, the agent SQL tool creates an isolated `sandbox_<experiment-id>` schema in Neon, loads the e-commerce fixture there, and executes only bounded read-only `SELECT`/`WITH` queries. The local SQLite files remain the default when `DATABASE_URL` is absent.
+
+Archives still include a portable SQLite snapshot of experiment evidence for compatibility. Neon sandbox data is additionally exported as `sandbox.json`. Keep the Neon URL and `GROQ_API_KEY` in deployment secrets; never commit them.
 
 ---
 
@@ -145,6 +166,34 @@ Controls are capability-aware; unsupported controls are shown but disabled.
 - Editable tool-definition JSON
 
 The adapter validates supported parameters before sending a request. Unsupported parameters are not sent, invalid schemas are rejected, and model limits (context size, max tokens) are enforced.
+
+### Available tools
+
+The Chat Console currently exposes one executable tool: `read_only_sql`. The UI sends its OpenAI-compatible definition in the request, while `AgentRunner` maps the model's tool call to the isolated experiment sandbox. The tool accepts one `sql` string and only permits bounded, read-only queries.
+
+In **Advanced Parameters**, edit **Tool definitions JSON** to change the model-facing description or schema. For example:
+
+```json
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "read_only_sql",
+      "description": "Run one read-only SQL query against the experiment sandbox",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sql": { "type": "string", "description": "A single SELECT query" }
+        },
+        "required": ["sql"],
+        "additionalProperties": false
+      }
+    }
+  }
+]
+```
+
+Changing this JSON changes what the model is told about the tool; it does not create a new Python tool. New executable tools must be registered in `AgentRunner` and added to its allowlist first. Unknown tool names are rejected before the model request is sent.
 
 ### Raw evidence
 

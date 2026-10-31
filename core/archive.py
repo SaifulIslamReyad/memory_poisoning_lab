@@ -21,7 +21,12 @@ from .config import (
     sha256_file,
     utc_now,
 )
-from .database import LAB_SCHEMA, LAB_SCHEMA_VERSION, connect_sqlite, initialize_lab_db
+from .database import (
+    LAB_SCHEMA,
+    LAB_SCHEMA_VERSION,
+    connect_sqlite,
+    initialize_lab_db,
+)
 
 SOFTWARE_VERSION = "1.0.0"
 
@@ -47,6 +52,44 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
         for row in rows:
             handle.write(json_dumps(redact(row)))
             handle.write("\n")
+
+
+def _write_postgres_sandbox_snapshot(
+    database_url: str,
+    experiment_id: str,
+    destination: Path,
+) -> None:
+    """Export the experiment's Neon sandbox schema as portable JSON."""
+    from .database import PostgresConnection
+
+    safe_id = "".join(
+        character if character.isalnum() or character == "_" else "_"
+        for character in experiment_id
+    )
+    schema = f"sandbox_{safe_id}"
+    connection = PostgresConnection(database_url, readonly=True)
+    snapshot: dict[str, Any] = {"schema": schema, "tables": {}}
+    try:
+        tables = connection.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = %s ORDER BY table_name",
+            (schema,),
+        ).fetchall()
+        for table_row in tables:
+            table = table_row[0]
+            if not isinstance(table, str) or not table.replace("_", "a").isalnum():
+                continue
+            quoted_table = '"' + table.replace('"', '""') + '"'
+            rows = connection.execute(
+                f'SELECT * FROM "{schema}".{quoted_table}'
+            ).fetchall()
+            snapshot["tables"][table] = [dict(row) for row in rows]
+    finally:
+        connection.close()
+    destination.write_text(
+        json.dumps(redact(snapshot), indent=2, sort_keys=True, default=str) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _redacted_values(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
@@ -81,9 +124,12 @@ def _copy_filtered_lab_database(
     try:
         target.executescript(LAB_SCHEMA)
         target.execute("PRAGMA foreign_keys = ON")
-        if source.execute(
-            "SELECT 1 FROM experiments WHERE id = ?", (experiment_id,)
-        ).fetchone() is None:
+        if (
+            source.execute(
+                "SELECT 1 FROM experiments WHERE id = ?", (experiment_id,)
+            ).fetchone()
+            is None
+        ):
             raise KeyError(f"unknown experiment: {experiment_id}")
 
         experiment_row = source.execute(
@@ -180,11 +226,16 @@ def import_archive(
     source = Path(archive_path).expanduser().resolve(strict=True)
     verification = verify_archive(source)
     if not verification.get("valid"):
-        raise ValueError(f"archive verification failed: {verification.get('errors', [])}")
+        raise ValueError(
+            f"archive verification failed: {verification.get('errors', [])}"
+        )
     manifest = verification.get("manifest") or {}
     experiment = manifest.get("experiment") or {}
     experiment_id = str(experiment.get("id") or source.parent.name or "archive")
-    safe_id = "".join(character if character.isalnum() or character in "-_" else "_" for character in experiment_id)
+    safe_id = "".join(
+        character if character.isalnum() or character in "-_" else "_"
+        for character in experiment_id
+    )
     review_root = cfg.archives_dir / "reviews"
     review_root.mkdir(parents=True, exist_ok=True)
     destination = review_root / f"review_{safe_id}_{new_id()}"
@@ -215,11 +266,11 @@ def export_experiment(
     """Export one experiment and return its manifest metadata."""
     cfg = config or load_config()
     cfg.ensure_directories()
-    lab_path = cfg.lab_db
-    if not lab_path.exists():
-        initialize_lab_db(lab_path).close()
+    lab_target = cfg.database_target
+    if isinstance(lab_target, Path) and not lab_target.exists():
+        initialize_lab_db(lab_target).close()
 
-    connection = connect_sqlite(lab_path, readonly=True)
+    connection = connect_sqlite(lab_target, readonly=True)
     try:
         experiment_row = connection.execute(
             "SELECT * FROM experiments WHERE id = ?", (experiment_id,)
@@ -289,7 +340,9 @@ def export_experiment(
         tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination_parent)
     )
     try:
-        _copy_filtered_lab_database(lab_path, temporary / "experiment.sqlite", experiment_id)
+        _copy_filtered_lab_database(
+            lab_target, temporary / "experiment.sqlite", experiment_id
+        )
         _write_jsonl(
             temporary / "requests.jsonl",
             [
@@ -328,7 +381,13 @@ def export_experiment(
             else cfg.sandbox_dir / f"{_safe_name(experiment_id)}.db"
         )
         sandbox_target = temporary / "sandbox.sqlite"
-        if sandbox_source.exists():
+        if cfg.database_url:
+            _write_postgres_sandbox_snapshot(
+                cfg.database_url,
+                experiment_id,
+                temporary / "sandbox.json",
+            )
+        elif sandbox_source.exists():
             shutil.copy2(sandbox_source, sandbox_target)
         else:
             with sqlite3.connect(sandbox_target) as handle:
@@ -358,9 +417,10 @@ def export_experiment(
                 "generated archive failed verification: "
                 + "; ".join(verification["errors"])
             )
-        total_size = sum(
-            (temporary / item["name"]).stat().st_size for item in file_entries
-        ) + (temporary / "manifest.json").stat().st_size
+        total_size = (
+            sum((temporary / item["name"]).stat().st_size for item in file_entries)
+            + (temporary / "manifest.json").stat().st_size
+        )
 
         if destination.exists():
             shutil.rmtree(destination)
@@ -370,7 +430,7 @@ def export_experiment(
         if temporary is not None and temporary.exists():
             shutil.rmtree(temporary, ignore_errors=True)
 
-    archive_connection = connect_sqlite(lab_path)
+    archive_connection = connect_sqlite(lab_target)
     try:
         archive_connection.execute(
             """
@@ -427,15 +487,31 @@ def verify_archive(archive_path: str | Path) -> dict[str, Any]:
     manifest_path = root / "manifest.json"
     errors: list[str] = []
     if not root.is_dir():
-        return {"valid": False, "errors": ["archive root is not a directory"], "manifest": None}
+        return {
+            "valid": False,
+            "errors": ["archive root is not a directory"],
+            "manifest": None,
+        }
     if not manifest_path.is_file() or manifest_path.is_symlink():
-        return {"valid": False, "errors": ["missing or unsafe manifest.json"], "manifest": None}
+        return {
+            "valid": False,
+            "errors": ["missing or unsafe manifest.json"],
+            "manifest": None,
+        }
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        return {"valid": False, "errors": [f"invalid manifest: {exc}"], "manifest": None}
+        return {
+            "valid": False,
+            "errors": [f"invalid manifest: {exc}"],
+            "manifest": None,
+        }
     if not isinstance(manifest, dict):
-        return {"valid": False, "errors": ["manifest must be an object"], "manifest": None}
+        return {
+            "valid": False,
+            "errors": ["manifest must be an object"],
+            "manifest": None,
+        }
     expected_hash = manifest.pop("manifest_hash", None)
     if not isinstance(expected_hash, str):
         errors.append("manifest hash is missing or invalid")
@@ -502,9 +578,9 @@ def verify_archive(archive_path: str | Path) -> dict[str, Any]:
 
 def list_archives(config: LabConfig | None = None) -> list[dict[str, Any]]:
     cfg = config or load_config()
-    if not cfg.lab_db.exists():
+    if isinstance(cfg.database_target, Path) and not cfg.database_target.exists():
         return []
-    connection = connect_sqlite(cfg.lab_db, readonly=True)
+    connection = connect_sqlite(cfg.database_target, readonly=True)
     try:
         rows = connection.execute(
             "SELECT * FROM archives ORDER BY created_at DESC"

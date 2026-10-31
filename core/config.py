@@ -81,9 +81,7 @@ def _redact_text(value: str) -> str:
         value,
     )
     # Pattern 3: Bare API key tokens like "sk_..." or "gsk_..." (OpenAI/Groq format)
-    secret_pattern = re.compile(
-        r"\b(?:sk|gsk)[_-][A-Za-z0-9._~+/=-]{16,}\b"
-    )
+    secret_pattern = re.compile(r"\b(?:sk|gsk)[_-][A-Za-z0-9._~+/=-]{16,}\b")
     return secret_pattern.sub("[REDACTED]", value)
 
 
@@ -96,9 +94,20 @@ def _is_sensitive_key(key: str) -> bool:
     normalized = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", raw).lower()
     # Set of exact key names that are always considered sensitive
     exact = {
-        "api_key", "apikey", "authorization", "auth", "secret", "secret_key",
-        "client_secret", "password", "passwd", "token", "access_token",
-        "credential", "credentials", "bearer",
+        "api_key",
+        "apikey",
+        "authorization",
+        "auth",
+        "secret",
+        "secret_key",
+        "client_secret",
+        "password",
+        "passwd",
+        "token",
+        "access_token",
+        "credential",
+        "credentials",
+        "bearer",
     }
     return (
         # Exact match in the sensitive set
@@ -148,6 +157,7 @@ def redact(value: Any) -> Any:
 @dataclass(frozen=True)
 class LabConfig:
     """Immutable configuration for the lab application."""
+
     # Root directory of the project (used for default paths)
     base_dir: Path = _PROJECT_ROOT
     # Path to the models catalog SQLite database
@@ -162,6 +172,8 @@ class LabConfig:
     fixture_db: Path = _PROJECT_ROOT / "data" / "ecommerce.db"
     # Path to the bundled model snapshot JSON file (imported when models DB is empty)
     model_snapshot: Path = _PROJECT_ROOT / "all_models_in_grok.json"
+    # Optional Neon/PostgreSQL connection URL. When set, it replaces both SQLite stores.
+    database_url: str | None = None
     # Base URL for the Groq-compatible API
     groq_base_url: str = "https://api.groq.com/openai/v1"
     # Timeout for API requests (seconds)
@@ -197,6 +209,16 @@ class LabConfig:
         ):
             path.mkdir(parents=True, exist_ok=True)
 
+    @property
+    def database_target(self) -> str | Path:
+        """Return the configured shared database target for repositories."""
+        return self.database_url or self.lab_db
+
+    @property
+    def models_target(self) -> str | Path:
+        """Return the configured model-catalog database target."""
+        return self.database_url or self.models_db
+
 
 def load_config(base_dir: str | Path | None = None) -> LabConfig:
     """Load configuration from environment variables and optional .env file."""
@@ -220,9 +242,9 @@ def load_config(base_dir: str | Path | None = None) -> LabConfig:
         sandbox_dir=data_dir / "sandbox",
         fixture_db=data_dir / "ecommerce.db",
         model_snapshot=root / "all_models_in_grok.json",
+        database_url=os.getenv("DATABASE_URL") or None,
         # Allow overriding the Groq API URL via environment variable
-        groq_base_url=os.getenv("GROQ_BASE_URL")
-        or "https://api.groq.com/openai/v1",
+        groq_base_url=os.getenv("GROQ_BASE_URL") or "https://api.groq.com/openai/v1",
         # Allow overriding request timeout via environment variable (default 30s)
         request_timeout=float(os.getenv("GROQ_REQUEST_TIMEOUT", "30")),
         # Allow overriding max rows via environment variable (default 100)

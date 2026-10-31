@@ -21,7 +21,7 @@ def _get_lab_connection(config: Any | None = None, *, readonly: bool = False):
     from core.database import connect_sqlite
 
     cfg = config or load_config()
-    return connect_sqlite(cfg.lab_db, readonly=readonly)
+    return connect_sqlite(cfg.database_target, readonly=readonly)
 
 
 def _get_model_capabilities(models: list[dict[str, Any]], model_id: str | None):
@@ -205,7 +205,7 @@ def render_catalog_page(
                     try:
                         result = sync_models(
                             api_key,
-                            db_path=config.models_db,
+                            db_path=config.models_target,
                             timeout=config.request_timeout,
                             url=f"{config.groq_base_url.rstrip('/')}/models",
                         )
@@ -225,7 +225,7 @@ def render_catalog_page(
             with st.spinner("Importing model snapshot..."):
                 try:
                     result = import_model_snapshot(
-                        config.model_snapshot, db_path=config.models_db
+                        config.model_snapshot, db_path=config.models_target
                     )
                     st.success(
                         f"Imported {result['imported']} models from snapshot. "
@@ -317,7 +317,7 @@ def render_catalog_page(
             from core.config import load_config
 
             config = load_config()
-            detail = get_model(config.models_db, selected_id)
+            detail = get_model(config.models_target, selected_id)
             if detail:
                 detail_col1, detail_col2 = st.columns(2)
                 with detail_col1:
@@ -851,6 +851,7 @@ def render_chat_page(
                                     "tool definitions must be a non-empty list"
                                 )
                             params["tools"] = parsed_tools
+                            tool_definitions = parsed_tools
                             tool_names = [
                                 item.get("function", {}).get("name")
                                 for item in parsed_tools
@@ -863,6 +864,12 @@ def render_chat_page(
                             ):
                                 raise ValueError(
                                     "each tool definition must contain function.name"
+                                )
+                            unsupported_tools = set(tool_names) - {"read_only_sql"}
+                            if unsupported_tools:
+                                raise ValueError(
+                                    "unregistered tools are not executable: "
+                                    + ", ".join(sorted(unsupported_tools))
                                 )
                         except (TypeError, ValueError) as exc:
                             params["invalid_parameter"] = (
@@ -890,9 +897,10 @@ def render_chat_page(
                         + ".db"
                     )
                     try:
-                        prepare_sandbox(
-                            config.fixture_db, config.sandbox_dir, experiment_id
-                        )
+                        if not config.database_url:
+                            prepare_sandbox(
+                                config.fixture_db, config.sandbox_dir, experiment_id
+                            )
                     except Exception as exc:
                         st.error(
                             f"Could not prepare isolated sandbox: {_safe_error(exc)}"
@@ -910,7 +918,17 @@ def render_chat_page(
                                     "function": {
                                         "name": "read_only_sql",
                                         "description": "Approved read-only laboratory tool",
-                                        "parameters": {"type": "object"},
+                                        "parameters": {
+                                            "type": "object",
+                                            "properties": {
+                                                "sql": {
+                                                    "type": "string",
+                                                    "description": "One read-only SELECT query",
+                                                }
+                                            },
+                                            "required": ["sql"],
+                                            "additionalProperties": False,
+                                        },
                                     },
                                 }
                             ]
@@ -1032,9 +1050,23 @@ def render_chat_page(
                 else "Tool definitions JSON (not supported)"
             ),
             key="adv_tool_definitions",
-            placeholder='[{"type":"function","function":{"name":"read_only_sql","description":"...","parameters":{"type":"object"}}}]',
+            help=(
+                "The only executable tool currently available is read_only_sql. "
+                "Define its JSON schema here; custom names require a registered Python tool."
+            ),
+            placeholder=(
+                '[{"type":"function","function":{"name":"read_only_sql",'
+                '"description":"Run one read-only SQL query",'
+                '"parameters":{"type":"object","properties":{"sql":'
+                '{"type":"string"}},"required":["sql"]}}}]'
+            ),
             disabled=not (capabilities and capabilities.supports("tools")),
         )
+        if capabilities and capabilities.supports("tools"):
+            st.caption(
+                "Available executable tool: read_only_sql(sql). "
+                "It queries the isolated experiment sandbox with read-only limits."
+            )
         supported_params = {
             key: value
             for key, value in {

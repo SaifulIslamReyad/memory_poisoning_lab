@@ -4,6 +4,7 @@ from __future__ import annotations
 
 # Import sys for path manipulation and stderr output
 import sys
+
 # Import Path for filesystem path operations
 from pathlib import Path
 
@@ -30,16 +31,18 @@ def ensure_databases() -> tuple[str, str]:
     """Initialize models and lab databases; import snapshot when models empty."""
     # Import catalog functions for listing models and importing snapshots
     from core.catalog import import_model_snapshot, list_models
+
     # Import the configuration loader
     from core.config import load_config
+
     # Import database initialization helpers
     from core.database import initialize_lab_db, initialize_models_db
 
     # Load the application configuration (paths, settings, etc.)
     config = load_config()
     # Get paths to the models and lab databases from config
-    models_db = config.models_db
-    lab_db = config.lab_db
+    models_db = config.models_target
+    lab_db = config.database_target
 
     # Initialize (create schema for) the models database; returns a live connection
     models_connection = initialize_models_db(models_db)
@@ -75,12 +78,16 @@ def main() -> None:
 
     # Import archive listing function for the Archive page
     from core.archive import list_archives
+
     # Import catalog functions for model listing and stats
     from core.catalog import catalog_stats, list_models
+
     # Import the configuration loader
     from core.config import load_config
+
     # Import the SQLite connection helper
     from core.database import connect_sqlite
+
     # Import experiment listing function
     from core.experiments import list_experiments
 
@@ -103,7 +110,11 @@ def main() -> None:
     # Fetch all models from the catalog (including inactive ones)
     models = list_models(models_db, active_only=False)
     # Compute catalog statistics, or use zeroed defaults if no models exist
-    stats = catalog_stats(models_db) if models else {"total": 0, "active": 0, "features": 0, "parameters": 0}
+    stats = (
+        catalog_stats(models_db)
+        if models
+        else {"total": 0, "active": 0, "features": 0, "parameters": 0}
+    )
 
     # Route to the appropriate page renderer based on the selected sidebar option
     if page == "Catalog":
@@ -143,7 +154,9 @@ def main() -> None:
 
                 try:
                     # Compute summary metrics for each experiment
-                    experiment_summaries[exp_id] = summarize_experiment(lab_connection, exp_id)
+                    experiment_summaries[exp_id] = summarize_experiment(
+                        lab_connection, exp_id
+                    )
                 except KeyError:
                     # Skip experiments that can't be summarized (e.g., missing data)
                     pass
