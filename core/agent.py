@@ -156,6 +156,7 @@ class AgentRunner:
             "probe": "active",
             "mitigation": "trusted",
             "post_mitigation": "trusted",
+            
         }.get(phase, "active")
 
     def _messages(
