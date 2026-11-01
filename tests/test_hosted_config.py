@@ -81,5 +81,27 @@ class TestRowFactoryContract(unittest.TestCase):
             maker(())
 
 
+class TestExecutemanyOnCursor(unittest.TestCase):
+    """psycopg 3 has no Connection.executemany; the wrapper must use a cursor."""
+
+    def test_executemany_uses_cursor(self) -> None:
+        from core.database import PostgresConnection
+
+        fake_cursor = MagicMock()
+        fake_conn = MagicMock()
+        fake_conn.cursor.return_value.__enter__.return_value = fake_cursor
+        fake_conn.cursor.return_value.__exit__.return_value = False
+        with patch("psycopg.connect", return_value=fake_conn):
+            connection = PostgresConnection.__new__(PostgresConnection)
+            connection._connection = fake_conn
+            connection.executemany(
+                "INSERT INTO t(a, b) VALUES (?, ?)", [(1, 2), (3, 4)]
+            )
+        fake_cursor.executemany.assert_called_once()
+        sql, params = fake_cursor.executemany.call_args.args
+        self.assertEqual(sql, "INSERT INTO t(a, b) VALUES (%s, %s)")
+        self.assertEqual(params, [(1, 2), (3, 4)])
+
+
 if __name__ == "__main__":
     unittest.main()

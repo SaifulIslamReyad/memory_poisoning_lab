@@ -105,7 +105,10 @@ class PostgresConnection:
         return self._connection.execute(_qmark_to_postgres(sql), parameters)
 
     def executemany(self, sql: str, parameters: Any) -> Any:
-        return self._connection.executemany(_qmark_to_postgres(sql), parameters)
+        # psycopg 3 has no Connection.executemany; it lives on Cursor. Run the
+        # batch through a single cursor so the row factory still applies.
+        with self._connection.cursor() as cursor:
+            return cursor.executemany(_qmark_to_postgres(sql), parameters)
 
     def executescript(self, script: str) -> None:
         statements = [
