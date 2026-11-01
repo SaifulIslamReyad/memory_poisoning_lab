@@ -103,7 +103,7 @@ def data_table(data: list[dict[str, Any]]) -> None:
     import streamlit as st
 
     if data:
-        st.dataframe(data, use_container_width=True)
+        st.dataframe(data, width='stretch')
 
 
 def spinner(message: str) -> Any:

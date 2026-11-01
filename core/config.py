@@ -206,31 +206,23 @@ class LabConfig:
 
 def load_config(base_dir: str | Path | None = None) -> LabConfig:
     """Load configuration from environment variables and optional .env file."""
-    # Attempt to load variables from a .env file if python-dotenv is installed
-    try:
-        from dotenv import load_dotenv
-
-        load_dotenv()
-    except ImportError:
-        pass
-
     # Resolve the root directory: explicit base_dir if provided, otherwise project root
     root = Path(base_dir).expanduser().resolve() if base_dir else _PROJECT_ROOT
     # Build the config, overriding defaults from environment variables where set
     config = LabConfig(
         base_dir=root,
         model_snapshot=root / "all_models_in_grok.json",
-        database_url=os.getenv("DATABASE_URL", "").strip(),
+        database_url=os.environ.get("DATABASE_URL", "").strip(),
         # Allow overriding the Groq API URL via environment variable
-        groq_base_url=os.getenv("GROQ_BASE_URL") or "https://api.groq.com/openai/v1",
+        groq_base_url=os.environ.get("GROQ_BASE_URL") or "https://api.groq.com/openai/v1",
         # Allow overriding request timeout via environment variable (default 30s)
-        request_timeout=float(os.getenv("GROQ_REQUEST_TIMEOUT", "30")),
+        request_timeout=float(os.environ.get("GROQ_REQUEST_TIMEOUT", "30")),
         # Allow overriding max rows via environment variable (default 100)
-        max_rows=int(os.getenv("LAB_MAX_ROWS", "100")),
+        max_rows=int(os.environ.get("LAB_MAX_ROWS", "100")),
         # Allow overriding max result bytes via environment variable (default 1 MB)
-        max_result_bytes=int(os.getenv("LAB_MAX_RESULT_BYTES", str(1024 * 1024))),
+        max_result_bytes=int(os.environ.get("LAB_MAX_RESULT_BYTES", str(1024 * 1024))),
         # Allow overriding max query steps via environment variable (default 100,000)
-        max_query_steps=int(os.getenv("LAB_MAX_QUERY_STEPS", "100000")),
+        max_query_steps=int(os.environ.get("LAB_MAX_QUERY_STEPS", "100000")),
     )
     # Ensure all required directories exist before returning
     config.ensure_directories()

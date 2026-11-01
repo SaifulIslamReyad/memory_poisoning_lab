@@ -242,7 +242,7 @@ def render_catalog_page(
                 }
                 for m in filtered
             ],
-            use_container_width=True,
+            width='stretch',
             key="catalog_table",
         )
     else:
@@ -303,7 +303,7 @@ def render_catalog_page(
                     if pricing:
                         st.dataframe(
                             [{"metric": k, "price": v} for k, v in pricing.items()],
-                            use_container_width=True,
+                            width='stretch',
                         )
                     else:
                         st.info("No pricing information.")
@@ -1062,8 +1062,8 @@ def render_chat_page(
                                     }
                                     for e in entries
                                 ],
-                                use_container_width=True,
-                            )
+            width='stretch',
+        )
                     else:
                         st.info("No memory entries.")
                 finally:
@@ -1351,7 +1351,7 @@ def render_dashboard_page(
             phase_data = [
                 {"phase": p, "sessions": c} for p, c in sorted(phase_counts.items())
             ]
-            st.dataframe(phase_data, use_container_width=True)
+            st.dataframe(phase_data, width='stretch')
             st.bar_chart({d["phase"]: d["sessions"] for d in phase_data})
         else:
             st.info("No sessions yet.")
@@ -1371,7 +1371,7 @@ def render_dashboard_page(
                     }
                     for d in detections
                 ],
-                use_container_width=True,
+                width='stretch',
                 key="detections_table",
             )
         else:
@@ -1397,7 +1397,7 @@ def render_dashboard_page(
                     }
                     for m in mitigations
                 ],
-                use_container_width=True,
+                width='stretch',
                 key="mitigations_table",
             )
             with st.expander("Memory Hash Comparison", expanded=False):
@@ -1427,7 +1427,7 @@ def render_dashboard_page(
                         }
                     )
         if turns_with_errors:
-            st.dataframe(turns_with_errors, use_container_width=True)
+            st.dataframe(turns_with_errors, width='stretch')
         else:
             st.info("No errors recorded yet.")
 
@@ -1451,7 +1451,7 @@ def render_dashboard_page(
                         "total": len(events),
                     }
                 )
-            st.dataframe(persistence_data, use_container_width=True)
+            st.dataframe(persistence_data, width='stretch')
         else:
             st.info("No sessions yet.")
 
@@ -1470,7 +1470,7 @@ def render_dashboard_page(
                         "turn_count": exp.get("turn_count", 0),
                     }
                 )
-            st.dataframe(model_comparison, use_container_width=True)
+            st.dataframe(model_comparison, width='stretch')
         else:
             st.info("No experiments to compare.")
 
@@ -1501,7 +1501,7 @@ def render_dashboard_page(
                                 }
                                 for t in turns
                             ],
-                            use_container_width=True,
+                            width='stretch',
                         )
                 with drill_col2:
                     st.markdown("**Memory Events**")
@@ -1520,7 +1520,7 @@ def render_dashboard_page(
                                 }
                                 for e in events
                             ],
-                            use_container_width=True,
+                            width='stretch',
                         )
     finally:
         conn.close()
