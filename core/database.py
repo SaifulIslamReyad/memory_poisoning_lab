@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from collections.abc import Sequence
 from typing import Any, Iterator
 
 # Schema version for the models catalog database
@@ -23,8 +24,29 @@ class _PostgresRow(dict):
         return super().__getitem__(key)
 
 
-def _postgres_row(cursor: Any, values: tuple[Any, ...]) -> _PostgresRow:
-    return _PostgresRow(zip((column.name for column in cursor.description), values))
+def _postgres_row_factory(cursor: Any) -> Any:
+    """Row factory (psycopg RowFactory protocol) returning a dict-like row maker.
+
+    psycopg calls a row factory with the cursor and expects it to return a
+    "row maker" callable that accepts the column *values* for each row. This
+    two-step contract (factory -> maker) is what the older single-function
+    signature ``_postgres_row(cursor, values)`` predates and breaks on
+    psycopg >= 3.2.
+    """
+    # Use the psycopg helper so queries without a result set (DDL/DML) are
+    # handled the same way psycopg's built-in dict_row handles them.
+    from psycopg.rows import _get_names
+
+    names = _get_names(cursor)
+    if names is None:
+        from psycopg.rows import no_result
+
+        return no_result
+
+    def _make_row(values: Sequence[Any]) -> _PostgresRow:
+        return _PostgresRow(zip(names, values))
+
+    return _make_row
 
 
 def _qmark_to_postgres(sql: str) -> str:
@@ -70,7 +92,7 @@ class PostgresConnection:
             url,
             autocommit=True,
             connect_timeout=max(1, int(timeout)),
-            row_factory=_postgres_row,
+            row_factory=_postgres_row_factory,
         )
         self._connection.execute(
             "SELECT set_config('statement_timeout', %s, false)",
