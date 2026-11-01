@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import unittest
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from core.config import load_config
@@ -101,6 +102,55 @@ class TestExecutemanyOnCursor(unittest.TestCase):
         sql, params = fake_cursor.executemany.call_args.args
         self.assertEqual(sql, "INSERT INTO t(a, b) VALUES (%s, %s)")
         self.assertEqual(params, [(1, 2), (3, 4)])
+
+
+class TestSchemaSelfRepair(unittest.TestCase):
+    """A version-stamped schema whose tables are actually missing must re-apply.
+
+    The old code trusted the ``schema_migrations`` version row alone, so a
+    partial prior run (e.g. ``executescript`` silently skipping a statement)
+    left the version stamped while child tables such as ``model_pricing`` were
+    absent, surfacing as ``UndefinedTable`` on the first enriching query.
+    """
+
+    def _fake_connection(self, existing_tables: set[str]) -> MagicMock:
+        connection = MagicMock()
+        stamped_version = (1,)
+
+        def execute(sql: str, params: Any = (), **kwargs: Any) -> MagicMock:
+            normalized = sql.replace("\n", " ").upper()
+            if "SELECT VERSION" in normalized and "SCHEMA_MIGRATIONS" in normalized:
+                return MagicMock(fetchone=MagicMock(return_value=stamped_version))
+            if "INFORMATION_SCHEMA.TABLES" in normalized:
+                return MagicMock(
+                    fetchall=MagicMock(
+                        return_value=[(t,) for t in sorted(existing_tables)]
+                    )
+                )
+            return MagicMock(fetchone=MagicMock(return_value=None),
+                            fetchall=MagicMock(return_value=[]))
+
+        connection.execute.side_effect = execute
+        return connection
+
+    def test_reapplies_schema_when_tables_are_missing(self) -> None:
+        from core.database import _apply_schema, MODEL_SCHEMA
+
+        # Only the parent `models` table exists; child tables are gone.
+        connection = self._fake_connection({"models"})
+        _apply_schema(connection, MODEL_SCHEMA, "models", 1, {})
+        # executescript must have been called to (re)create the missing tables.
+        connection.executescript.assert_called_once_with(MODEL_SCHEMA)
+
+    def test_skips_apply_when_all_tables_exist(self) -> None:
+        from core.database import _apply_schema, MODEL_SCHEMA
+
+        connection = self._fake_connection(
+            {"models", "model_features", "model_modalities", "model_pricing",
+             "model_sampling_parameters"}
+        )
+        _apply_schema(connection, MODEL_SCHEMA, "models", 1, {})
+        connection.executescript.assert_not_called()
 
 
 if __name__ == "__main__":

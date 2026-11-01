@@ -353,6 +353,51 @@ def transaction(connection: Any) -> Iterator[Any]:
         raise
 
 
+def _schema_tables_exist(connection: Any, schema: str) -> bool:
+    """Return True if every CREATE TABLE statement in *schema* already exists.
+
+    Trusting only the ``schema_migrations`` version row is unsafe: a partial
+    prior run (or a hand-edited catalog) can leave the version stamped while
+    child tables such as ``model_pricing`` are missing, which then surfaces as
+    ``UndefinedTable`` on the first enriching query.
+    """
+    table_names: set[str] = set()
+    for statement in schema.split(";"):
+        stripped = statement.strip()
+        if not stripped:
+            continue
+        upper = stripped.upper()
+        marker = "CREATE TABLE"
+        index = upper.find(marker)
+        if index < 0:
+            continue
+        rest = stripped[index + len(marker):].lstrip()
+        if rest.startswith("IF NOT EXISTS"):
+            rest = rest[len("IF NOT EXISTS"):].lstrip()
+        # Table name is the next identifier (optionally schema-qualified).
+        name_chars: list[str] = []
+        for char in rest:
+            if char.isalnum() or char == "_":
+                name_chars.append(char)
+            else:
+                break
+        if not name_chars:
+            continue
+        table_names.add("".join(name_chars).lower())
+    if not table_names:
+        return True
+    existing: set[str] = set()
+    rows = connection.execute(
+        """
+        SELECT table_name FROM information_schema.tables
+        WHERE table_schema = 'public'
+        """
+    ).fetchall()
+    for row in rows:
+        existing.add(str(row[0]).lower())
+    return table_names.issubset(existing)
+
+
 def _apply_schema(
     connection: Any,
     schema: str,
@@ -381,9 +426,15 @@ def _apply_schema(
         raise ValueError(
             f"cannot downgrade {name} schema from version {current} to {version}"
         )
-    # If already at the target version, nothing to do
+    # If already at the target version, verify the tables actually exist
+    # before trusting the migration stamp (a partial prior run can leave the
+    # version stamped while child tables such as ``model_pricing`` are
+    # missing). If they are gone, re-apply the full schema to repair it.
     if current == version:
-        return
+        if _schema_tables_exist(connection, schema):
+            return
+        # Treat the incomplete state as a fresh install and re-apply below.
+        current = 0
     # If starting fresh (version 0), apply the full schema
     if current == 0:
         connection.executescript(schema)
