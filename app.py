@@ -123,7 +123,7 @@ def main() -> None:
     # The radio buttons determine which page to show; default is the first option
     page = st.sidebar.radio(
         "Navigate",
-        ["Catalog", "Chat Console", "Memory Panel", "Dashboard"],
+        ["Catalog", "Chat Console", "Memory,Experiment,Session", "Dashboard"],
     )
 
     # Load configuration (provides API keys, paths, and settings)
@@ -159,7 +159,7 @@ def main() -> None:
         # Render the chat page, passing available models and experiment IDs
         render_chat_page(models=models, experiment_ids=experiment_ids)
 
-    elif page == "Memory Panel":
+    elif page == "Memory,Experiment,Session":
         from gui.pages import render_memory_panel_page
 
         lab_connection = connect_database(lab_db, readonly=True)

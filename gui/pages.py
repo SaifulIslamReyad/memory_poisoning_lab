@@ -408,256 +408,33 @@ def render_chat_page(
     session: dict[str, Any] | None = None
     selected_session_id: str | None = None
 
-    st.subheader("Experiment & Session")
-    exp_col, sess_col = st.columns(2)
-    with exp_col:
-        current_exp = st.session_state.chat_experiment_id
-        exp_options = list(
-            dict.fromkeys(
-                [
-                    *(experiment_ids or []),
-                    current_exp if current_exp in (experiment_ids or []) else None,
-                ]
-            )
-        )
-        exp_options = [item for item in exp_options if item]
-        new_exp_name = st.text_input(
-            "New experiment name",
-            key="new_experiment_name",
-            placeholder="Enter name to create a new experiment",
-        )
-        poison_vector = st.selectbox(
-            "Poison vector",
-            [
-                "none",
-                "direct_assertion",
-                "retrieved_document",
-                "tool_response",
-                "assistant_summary",
-                "persisted_profile",
-            ],
-            key="new_poison_vector",
-        )
-        mitigation_strategy = st.selectbox(
-            "Mitigation strategy",
-            ["none", *sorted(STRATEGIES)],
-            key="new_mitigation_strategy",
-        )
-        if exp_options:
-            selected_exp = st.selectbox(
-                "Select experiment",
-                exp_options,
-                index=(
-                    exp_options.index(current_exp) if current_exp in exp_options else 0
-                ),
-                key="chat_experiment_select",
-            )
-        else:
-            selected_exp = None
-        if st.button("Create Experiment", key="create_exp_btn"):
-            if not selected_model:
-                st.warning("Select a model before creating an experiment.")
-            elif new_exp_name.strip():
-                conn = _get_lab_connection(config)
-                try:
-                    exp_id = create_experiment(
-                        conn,
-                        new_exp_name.strip(),
-                        model_id=selected_model,
-                        poison_vector=(
-                            None if poison_vector == "none" else poison_vector
-                        ),
-                        mitigation_strategy=(
-                            None
-                            if mitigation_strategy == "none"
-                            else mitigation_strategy
-                        ),
-                    )
-
-                    st.session_state.chat_experiment_id = exp_id
-                    st.session_state.chat_session_id = None
-                    st.session_state.chat_transcript_session_id = None
-                    st.session_state.chat_messages = []
-                    st.success(f"Created experiment: {exp_id}")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Failed to create experiment: {_safe_error(exc)}")
-                finally:
-                    conn.close()
-            else:
-                st.warning("Experiment name is required.")
-
-        # Delete Experiment button
-        if exp_options and selected_exp:
-            if st.button("Delete Experiment", key="delete_exp_btn", type="secondary"):
-                conn = _get_lab_connection(config)
-                try:
-                    deleted = delete_experiment(conn, selected_exp)
-                    if deleted:
-                        if st.session_state.chat_experiment_id == selected_exp:
-                            st.session_state.chat_experiment_id = None
-                            st.session_state.chat_session_id = None
-                            st.session_state.chat_transcript_session_id = None
-                            st.session_state.chat_messages = []
-                        st.success(f"Deleted experiment: {selected_exp}")
-                        st.rerun()
-                    else:
-                        st.error("Experiment not found.")
-                except Exception as exc:
-                    st.error(f"Failed to delete experiment: {_safe_error(exc)}")
-                finally:
-                    conn.close()
-
-        if selected_exp != st.session_state.chat_experiment_id:
-            st.session_state.chat_experiment_id = selected_exp
+    # Experiment and session management lives on the Memory Panel page.
+    # Chat Console reads the active experiment/session from session state.
+    if st.session_state.get("chat_experiment_id"):
+        conn = _get_lab_connection(config, readonly=True)
+        try:
+            session = get_session(conn, st.session_state.chat_experiment_id)
+        finally:
+            conn.close()
+        if session is None:
+            st.session_state.chat_experiment_id = None
             st.session_state.chat_session_id = None
             st.session_state.chat_transcript_session_id = None
             st.session_state.chat_messages = []
 
-    with sess_col:
-        if st.session_state.chat_experiment_id:
-            conn = _get_lab_connection(config, readonly=True)
-            try:
-                sessions = list_sessions(
-                    conn, experiment_id=st.session_state.chat_experiment_id
-                )
-            finally:
-                conn.close()
-            sess_options = [s["id"] for s in sessions]
-            if sess_options:
-                current_sess = st.session_state.chat_session_id
-                selected_session_id = st.selectbox(
-                    "Select session",
-                    sess_options,
-                    index=(
-                        sess_options.index(current_sess)
-                        if current_sess in sess_options
-                        else 0
-                    ),
-                    key="chat_session_select",
-                )
-                if selected_session_id != st.session_state.chat_session_id:
-                    st.session_state.chat_session_id = selected_session_id
-                    st.session_state.chat_transcript_session_id = None
-                    st.session_state.chat_messages = []
-            else:
+    if st.session_state.get("chat_session_id"):
+        selected_session_id = st.session_state.chat_session_id
+        conn = _get_lab_connection(config, readonly=True)
+        try:
+            sess = get_session(conn, selected_session_id)
+            if sess and sess.get("experiment_id") != st.session_state.chat_experiment_id:
+                session = None
                 selected_session_id = None
                 st.session_state.chat_session_id = None
                 st.session_state.chat_transcript_session_id = None
                 st.session_state.chat_messages = []
-                st.info("No sessions yet. Create one below.")
-        else:
-            selected_session_id = None
-            st.session_state.chat_session_id = None
-            st.session_state.chat_transcript_session_id = None
-            st.session_state.chat_messages = []
-            st.info("Create an experiment first.")
-
-        new_session_phase = st.selectbox(
-            "New session phase",
-            sorted(PHASES),
-            key="new_session_phase",
-        )
-
-        # Namespace selector: existing namespaces + option to create a new one
-        existing_namespaces: list[str] = []
-        if st.session_state.chat_experiment_id:
-            conn_ns = _get_lab_connection(config, readonly=True)
-            try:
-                rows = conn_ns.execute(
-                    """
-                    SELECT DISTINCT memory_namespace
-                    FROM sessions
-                    WHERE experiment_id = ?
-                    ORDER BY memory_namespace
-                    """,
-                    (st.session_state.chat_experiment_id,),
-                ).fetchall()
-                existing_namespaces = [r[0] for r in rows]
-            finally:
-                conn_ns.close()
-
-        namespace_options = existing_namespaces + ["+ Create new namespace..."]
-        namespace_choice = st.selectbox(
-            "Memory namespace",
-            namespace_options,
-            key="chat_namespace_select",
-            help="Choose an existing namespace to share memory across sessions, or create a new isolated one.",
-        )
-        if namespace_choice == "+ Create new namespace...":
-            new_namespace = (
-                st.text_input(
-                    "New namespace name",
-                    key="chat_new_namespace_name",
-                    placeholder="e.g. namespace_test_1",
-                ).strip()
-                or None
-            )
-        else:
-            new_namespace = namespace_choice
-
-        if st.button("Create Session", key="create_sess_btn"):
-            if st.session_state.chat_experiment_id:
-                conn = _get_lab_connection(config)
-                try:
-                    sess_id = create_session(
-                        conn,
-                        st.session_state.chat_experiment_id,
-                        phase=new_session_phase,
-                        memory_namespace=new_namespace,
-                    )
-                    st.session_state.chat_session_id = sess_id
-                    st.session_state.chat_transcript_session_id = None
-                    st.session_state.chat_messages = []
-                    st.success(f"Created session: {sess_id}")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Failed to create session: {_safe_error(exc)}")
-                finally:
-                    conn.close()
-            else:
-                st.warning("Create an experiment first.")
-
-        # Delete Session button
-        if selected_session_id:
-            if st.button("Delete Session", key="delete_sess_btn", type="secondary"):
-                conn = _get_lab_connection(config)
-                try:
-                    deleted = delete_session(conn, selected_session_id)
-                    if deleted:
-                        if st.session_state.chat_session_id == selected_session_id:
-                            st.session_state.chat_session_id = None
-                            st.session_state.chat_transcript_session_id = None
-                            st.session_state.chat_messages = []
-                        st.success(f"Deleted session: {selected_session_id}")
-                        st.rerun()
-                    else:
-                        st.error("Session not found.")
-                except Exception as exc:
-                    st.error(f"Failed to delete session: {_safe_error(exc)}")
-                finally:
-                    conn.close()
-
-    if selected_session_id:
-        conn = _get_lab_connection(config, readonly=True)
-        try:
-            session = get_session(conn, selected_session_id)
-            if (
-                session
-                and session.get("experiment_id") != st.session_state.chat_experiment_id
-            ):
-                session = None
         finally:
             conn.close()
-        if session is None:
-            st.session_state.chat_session_id = None
-            st.session_state.chat_transcript_session_id = None
-            st.session_state.chat_messages = []
-            selected_session_id = None
-            st.warning("The selected session is no longer available.")
-        elif st.session_state.chat_transcript_session_id != selected_session_id:
-            st.session_state.chat_messages = _load_transcript_turns(selected_session_id)
-            st.session_state.chat_transcript_session_id = selected_session_id
 
     st.subheader("Chat Transcript")
     job_id = st.session_state.get("chat_job_id")
@@ -1065,9 +842,7 @@ def render_chat_page(
                 ):
                     _json_code(msg["raw_response"])
 
-    # st.info("Memory management moved to the Memory Panel page.")
-
-    st.subheader("Poisoning Workflow")
+    #     st.subheader("Poisoning Workflow")
     if selected_session_id and session:
         workflow_cols = st.columns(4)
         with workflow_cols[0]:
@@ -1228,61 +1003,327 @@ def render_memory_panel_page(
         reset_memory,
         write_memory,
     )
+    from core.mitigations import STRATEGIES
     from core.config import load_config
     from core.database import connect_database
+    from core.catalog import list_models
+    from core.experiments import (
+        PHASES,
+        create_experiment,
+        create_session,
+        delete_experiment,
+        delete_session,
+        get_session,
+        list_sessions,
+    )
 
     cfg = config or load_config()
-    st.title("Memory Panel")
+    st.title("Memory,Experiment,Session Panel")
 
-    if not experiment_ids:
-        st.info("No experiments yet. Create one in the Chat Console first.")
-        return
+    models = list_models(cfg.database_target, active_only=False)
+    model_ids = [m["id"] for m in (models or [])]
 
-    selected_exp = st.selectbox(
-        "Select experiment",
-        experiment_ids,
-        key="mem_panel_experiment",
-    )
-    if not selected_exp:
+    # ------------------------------------------------------------------
+    # Experiment & Session (moved from Chat Console)
+    # ------------------------------------------------------------------
+    if "chat_experiment_id" not in st.session_state:
+        st.session_state.chat_experiment_id = None
+    if "chat_session_id" not in st.session_state:
+        st.session_state.chat_session_id = None
+    if "chat_transcript_session_id" not in st.session_state:
+        st.session_state.chat_transcript_session_id = None
+    if "chat_messages" not in st.session_state:
+        st.session_state.chat_messages = []
+
+    model_ids = [m["id"] for m in (models or [])]
+    text_model_ids = [
+        m["id"]
+        for m in (models or [])
+        if "text" in (m.get("input_modalities") or [])
+        and "text" in (m.get("output_modalities") or [])
+    ]
+
+    if text_model_ids:
+        selected_model = st.selectbox("Model", text_model_ids, key="mem_panel_model_select")
+    elif model_ids:
+        selected_model = st.selectbox(
+            "Model (no text/text)", model_ids, key="mem_panel_model_select"
+        )
+    else:
+        selected_model = None
+        st.warning("No models available. Sync or import the catalog first.")
+
+    st.subheader("Experiment & Session")
+    exp_col, sess_col = st.columns(2)
+    with exp_col:
+        current_exp = st.session_state.chat_experiment_id
+        exp_options = list(
+            dict.fromkeys(
+                [
+                    *(experiment_ids or []),
+                    current_exp if current_exp in (experiment_ids or []) else None,
+                ]
+            )
+        )
+        exp_options = [item for item in exp_options if item]
+        new_exp_name = st.text_input(
+            "New experiment name",
+            key="mem_panel_new_exp_name",
+            placeholder="Enter name to create a new experiment",
+        )
+        poison_vector = st.selectbox(
+            "Poison vector",
+            [
+                "none",
+                "direct_assertion",
+                "retrieved_document",
+                "tool_response",
+                "assistant_summary",
+                "persisted_profile",
+            ],
+            key="mem_panel_new_poison_vector",
+        )
+        mitigation_strategy = st.selectbox(
+            "Mitigation strategy",
+            ["none", *sorted(STRATEGIES)],
+            key="mem_panel_new_mitigation_strategy",
+        )
+        if exp_options:
+            selected_exp = st.selectbox(
+                "Select experiment",
+                exp_options,
+                index=(
+                    exp_options.index(current_exp) if current_exp in exp_options else 0
+                ),
+                key="mem_panel_experiment_select",
+            )
+        else:
+            selected_exp = None
+        if st.button("Create Experiment", key="mem_panel_create_exp_btn"):
+            if not selected_model:
+                st.warning("Select a model before creating an experiment.")
+            elif new_exp_name.strip():
+                conn = connect_database(cfg.database_target)
+                try:
+                    exp_id = create_experiment(
+                        conn,
+                        new_exp_name.strip(),
+                        model_id=selected_model,
+                        poison_vector=(
+                            None if poison_vector == "none" else poison_vector
+                        ),
+                        mitigation_strategy=(
+                            None
+                            if mitigation_strategy == "none"
+                            else mitigation_strategy
+                        ),
+                    )
+
+                    st.session_state.chat_experiment_id = exp_id
+                    st.session_state.chat_session_id = None
+                    st.session_state.chat_transcript_session_id = None
+                    st.session_state.chat_messages = []
+                    st.success(f"Created experiment: {exp_id}")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Failed to create experiment: {_safe_error(exc)}")
+                finally:
+                    conn.close()
+            else:
+                st.warning("Experiment name is required.")
+
+        # Delete Experiment button
+        if exp_options and selected_exp:
+            if st.button("Delete Experiment", key="mem_panel_delete_exp_btn", type="secondary"):
+                conn = connect_database(cfg.database_target)
+                try:
+                    deleted = delete_experiment(conn, selected_exp)
+                    if deleted:
+                        if st.session_state.chat_experiment_id == selected_exp:
+                            st.session_state.chat_experiment_id = None
+                            st.session_state.chat_session_id = None
+                            st.session_state.chat_transcript_session_id = None
+                            st.session_state.chat_messages = []
+                        st.success(f"Deleted experiment: {selected_exp}")
+                        st.rerun()
+                    else:
+                        st.error("Experiment not found.")
+                except Exception as exc:
+                    st.error(f"Failed to delete experiment: {_safe_error(exc)}")
+                finally:
+                    conn.close()
+
+        if selected_exp != st.session_state.chat_experiment_id:
+            st.session_state.chat_experiment_id = selected_exp
+            st.session_state.chat_session_id = None
+            st.session_state.chat_transcript_session_id = None
+            st.session_state.chat_messages = []
+
+    with sess_col:
+        if st.session_state.chat_experiment_id:
+            conn = connect_database(cfg.database_target, readonly=True)
+            try:
+                sessions = list_sessions(
+                    conn, experiment_id=st.session_state.chat_experiment_id
+                )
+            finally:
+                conn.close()
+            sess_options = [s["id"] for s in sessions]
+            if sess_options:
+                current_sess = st.session_state.chat_session_id
+                selected_session_id = st.selectbox(
+                    "Select session",
+                    sess_options,
+                    index=(
+                        sess_options.index(current_sess)
+                        if current_sess in sess_options
+                        else 0
+                    ),
+                    key="mem_panel_session_select",
+                )
+                if selected_session_id != st.session_state.chat_session_id:
+                    st.session_state.chat_session_id = selected_session_id
+                    st.session_state.chat_transcript_session_id = None
+                    st.session_state.chat_messages = []
+            else:
+                selected_session_id = None
+                st.session_state.chat_session_id = None
+                st.session_state.chat_transcript_session_id = None
+                st.session_state.chat_messages = []
+                st.info("No sessions yet. Create one below.")
+        else:
+            selected_session_id = None
+            st.session_state.chat_session_id = None
+            st.session_state.chat_transcript_session_id = None
+            st.session_state.chat_messages = []
+            st.info("Create an experiment first.")
+
+        new_session_phase = st.selectbox(
+            "New session phase",
+            sorted(PHASES),
+            key="mem_panel_new_session_phase",
+        )
+
+        # Namespace selector: existing namespaces + option to create a new one
+        existing_namespaces: list[str] = []
+        if st.session_state.chat_experiment_id:
+            conn_ns = connect_database(cfg.database_target, readonly=True)
+            try:
+                rows = conn_ns.execute(
+                    """
+                    SELECT DISTINCT memory_namespace
+                    FROM sessions
+                    WHERE experiment_id = ?
+                    ORDER BY memory_namespace
+                    """,
+                    (st.session_state.chat_experiment_id,),
+                ).fetchall()
+                existing_namespaces = [r[0] for r in rows]
+            finally:
+                conn_ns.close()
+
+        namespace_options = existing_namespaces + ["+ Create new namespace..."]
+        namespace_choice = st.selectbox(
+            "Memory namespace",
+            namespace_options,
+            key="mem_panel_namespace_select",
+            help="Choose an existing namespace to share memory across sessions, or create a new isolated one.",
+        )
+        if namespace_choice == "+ Create new namespace...":
+            new_namespace = (
+                st.text_input(
+                    "New namespace name",
+                    key="mem_panel_new_namespace_name",
+                    placeholder="e.g. namespace_test_1",
+                ).strip()
+                or None
+            )
+        else:
+            new_namespace = namespace_choice
+
+        if st.button("Create Session", key="mem_panel_create_sess_btn"):
+            if st.session_state.chat_experiment_id:
+                conn = connect_database(cfg.database_target)
+                try:
+                    sess_id = create_session(
+                        conn,
+                        st.session_state.chat_experiment_id,
+                        phase=new_session_phase,
+                        memory_namespace=new_namespace,
+                    )
+                    st.session_state.chat_session_id = sess_id
+                    st.session_state.chat_transcript_session_id = None
+                    st.session_state.chat_messages = []
+                    st.success(f"Created session: {sess_id}")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Failed to create session: {_safe_error(exc)}")
+                finally:
+                    conn.close()
+            else:
+                st.warning("Create an experiment first.")
+
+        # Delete Session button
+        if selected_session_id:
+            if st.button("Delete Session", key="mem_panel_delete_sess_btn", type="secondary"):
+                conn = connect_database(cfg.database_target)
+                try:
+                    deleted = delete_session(conn, selected_session_id)
+                    if deleted:
+                        if st.session_state.chat_session_id == selected_session_id:
+                            st.session_state.chat_session_id = None
+                            st.session_state.chat_transcript_session_id = None
+                            st.session_state.chat_messages = []
+                        st.success(f"Deleted session: {selected_session_id}")
+                        st.rerun()
+                    else:
+                        st.error("Session not found.")
+                except Exception as exc:
+                    st.error(f"Failed to delete session: {_safe_error(exc)}")
+                finally:
+                    conn.close()
+
+    # ------------------------------------------------------------------
+    # Namespace-scoped memory operations
+    # ------------------------------------------------------------------
+    active_exp_id = st.session_state.chat_experiment_id
+    if not active_exp_id:
+        st.info("Create an experiment and session in the Experiment & Session section above.")
         return
 
     conn = connect_database(cfg.database_target)
     try:
-        namespaces = _get_namespaces_for_experiment(conn, selected_exp)
+        namespaces = _get_namespaces_for_experiment(conn, active_exp_id)
     finally:
         conn.close()
 
     if not namespaces:
-        st.info("No namespaces yet. Create a session in the Chat Console to establish one.")
+        st.info("No namespaces yet. Create a session to establish one.")
         return
 
     namespace_options = namespaces + ["+ Create new namespace..."]
     namespace_choice = st.selectbox(
         "Memory namespace",
         namespace_options,
-        key="mem_panel_namespace",
+        key="mem_panel_ops_namespace",
         help="Select a namespace to inspect and manage its memory entries, or create a new isolated one.",
     )
 
     if namespace_choice == "+ Create new namespace...":
         new_ns_name = st.text_input(
             "New namespace name",
-            key="mem_panel_new_ns",
+            key="mem_panel_ops_new_ns",
             placeholder="e.g. namespace_isolated_1",
         )
-        if st.button("Create Namespace", key="mem_panel_create_ns_btn"):
+        if st.button("Create Namespace", key="mem_panel_ops_create_ns_btn"):
             if not new_ns_name or not new_ns_name.strip():
                 st.warning("Namespace name is required.")
             else:
-                # Persist by creating a placeholder session in the new namespace under this experiment.
-                # The namespace is stored on sessions, so we create a minimal session to establish it.
                 conn = connect_database(cfg.database_target)
                 try:
-                    from core.experiments import create_session
-
                     create_session(
                         conn,
-                        selected_exp,
+                        active_exp_id,
                         phase="baseline",
                         memory_namespace=new_ns_name.strip(),
                     )
@@ -1299,7 +1340,7 @@ def render_memory_panel_page(
     # Load sessions in this namespace
     conn = connect_database(cfg.database_target, readonly=True)
     try:
-        sessions = _get_sessions_for_namespace(conn, selected_exp, namespace)
+        sessions = _get_sessions_for_namespace(conn, active_exp_id, namespace)
     finally:
         conn.close()
 
