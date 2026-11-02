@@ -558,14 +558,44 @@ def render_chat_page(
             sorted(PHASES),
             key="new_session_phase",
         )
-        new_namespace = (
-            st.text_input(
-                "Memory namespace (blank reuses run namespace)",
-                key="new_memory_namespace",
-                placeholder="optional",
-            ).strip()
-            or None
+
+        # Namespace selector: existing namespaces + option to create a new one
+        existing_namespaces: list[str] = []
+        if st.session_state.chat_experiment_id:
+            conn_ns = _get_lab_connection(config, readonly=True)
+            try:
+                rows = conn_ns.execute(
+                    """
+                    SELECT DISTINCT memory_namespace
+                    FROM sessions
+                    WHERE experiment_id = ?
+                    ORDER BY memory_namespace
+                    """,
+                    (st.session_state.chat_experiment_id,),
+                ).fetchall()
+                existing_namespaces = [r[0] for r in rows]
+            finally:
+                conn_ns.close()
+
+        namespace_options = existing_namespaces + ["+ Create new namespace..."]
+        namespace_choice = st.selectbox(
+            "Memory namespace",
+            namespace_options,
+            key="chat_namespace_select",
+            help="Choose an existing namespace to share memory across sessions, or create a new isolated one.",
         )
+        if namespace_choice == "+ Create new namespace...":
+            new_namespace = (
+                st.text_input(
+                    "New namespace name",
+                    key="chat_new_namespace_name",
+                    placeholder="e.g. namespace_test_1",
+                ).strip()
+                or None
+            )
+        else:
+            new_namespace = namespace_choice
+
         if st.button("Create Session", key="create_sess_btn"):
             if st.session_state.chat_experiment_id:
                 conn = _get_lab_connection(config)
@@ -1035,123 +1065,8 @@ def render_chat_page(
                 ):
                     _json_code(msg["raw_response"])
 
-    st.subheader("Memory Panel")
-    if selected_session_id and session:
-        namespace = session["memory_namespace"]
-        st.markdown(f"**Memory Namespace:** `{namespace}`")
+    # st.info("Memory management moved to the Memory Panel page.")
 
-        mem_col1, mem_col2, mem_col3, mem_col4, mem_col5 = st.columns(5)
-        with mem_col1:
-            if st.button("Read Memory", key="mem_read_btn"):
-                conn = _get_lab_connection(config, readonly=True)
-                try:
-                    entries = read_memory(conn, namespace, policy="all")
-                    if entries:
-                        with st.expander("Memory Entries", expanded=True):
-                            st.dataframe(
-                                [
-                                    {
-                                        "key": e.get("memory_key"),
-                                        "value": (
-                                            json.dumps(e.get("value"))[:100]
-                                            if e.get("value")
-                                            else None
-                                        ),
-                                        "provenance": e.get("provenance", "N/A"),
-                                        "status": e.get("status", "N/A"),
-                                    }
-                                    for e in entries
-                                ],
-            width='stretch',
-        )
-                    else:
-                        st.info("No memory entries.")
-                finally:
-                    conn.close()
-        with mem_col2:
-            mem_key = st.text_input("Memory key", key="mem_key", placeholder="key")
-            mem_value = st.text_area(
-                "Memory value", key="mem_value", placeholder="value"
-            )
-            mem_provenance = st.selectbox(
-                "Provenance",
-                ["explicit", "trusted", "untrusted", "poison", "tool"],
-                key="mem_provenance",
-            )
-            if st.button("Write Memory", key="mem_write_btn"):
-                if mem_key.strip():
-                    conn = _get_lab_connection(config)
-                    try:
-                        write_memory(
-                            conn,
-                            selected_session_id,
-                            mem_key.strip(),
-                            mem_value or "",
-                            provenance=mem_provenance,
-                        )
-                        st.success("Memory written.")
-                    except Exception as exc:
-                        st.error(f"Write failed: {_safe_error(exc)}")
-                    finally:
-                        conn.close()
-                else:
-                    st.warning("Memory key is required.")
-            if st.button("Write Poison Memory", key="write_poison_memory_btn"):
-                if mem_key.strip():
-                    conn = _get_lab_connection(config)
-                    try:
-                        write_memory(
-                            conn,
-                            selected_session_id,
-                            mem_key.strip(),
-                            mem_value or "",
-                            provenance="poison:lab_canary",
-                        )
-                        st.success("Poison memory written with canary provenance.")
-                    except Exception as exc:
-                        st.error(f"Poison write failed: {_safe_error(exc)}")
-                    finally:
-                        conn.close()
-                else:
-                    st.warning("Memory key is required.")
-        with mem_col3:
-            if st.button("Quarantine All", key="mem_quarantine_btn"):
-                conn = _get_lab_connection(config)
-                try:
-                    count = quarantine_memory(conn, namespace)
-                    st.success(f"Quarantined {count} entries.")
-                except Exception as exc:
-                    st.error(f"Quarantine failed: {_safe_error(exc)}")
-                finally:
-                    conn.close()
-        with mem_col4:
-            if st.button("Reset Memory", key="mem_reset_btn"):
-                conn = _get_lab_connection(config)
-                try:
-                    count = reset_memory(conn, namespace)
-                    st.success(f"Reset {count} entries.")
-                except Exception as exc:
-                    st.error(f"Reset failed: {_safe_error(exc)}")
-                finally:
-                    conn.close()
-        with mem_col5:
-            if st.button("Export Memory", key="mem_export_btn"):
-                conn = _get_lab_connection(config, readonly=True)
-                try:
-                    entries = list_memory_events(conn, session_id=selected_session_id)
-                    if entries:
-                        payload = json.dumps(entries, indent=2, default=str)
-                        st.download_button(
-                            "Download Memory JSON",
-                            data=payload,
-                            file_name=f"memory_{selected_session_id}.json",
-                            mime="application/json",
-                            key="mem_download",
-                        )
-                    else:
-                        st.info("No memory entries to export.")
-                finally:
-                    conn.close()
     st.subheader("Poisoning Workflow")
     if selected_session_id and session:
         workflow_cols = st.columns(4)
@@ -1264,6 +1179,276 @@ def render_chat_page(
                     conn.close()
     else:
         st.info("Select a session to manage memory and poisoning workflow.")
+
+
+# ---------------------------------------------------------------------------
+# Memory Panel Page
+# ---------------------------------------------------------------------------
+
+
+def _get_namespaces_for_experiment(conn, experiment_id: str) -> list[str]:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT memory_namespace
+        FROM sessions
+        WHERE experiment_id = ?
+        ORDER BY memory_namespace
+        """,
+        (experiment_id,),
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def _get_sessions_for_namespace(conn, experiment_id: str, namespace: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT s.id, s.phase, s.started_at
+        FROM sessions s
+        WHERE s.experiment_id = ? AND s.memory_namespace = ?
+        ORDER BY s.started_at
+        """,
+        (experiment_id, namespace),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def render_memory_panel_page(
+    config: Any | None = None,
+    experiment_ids: list[str] | None = None,
+) -> None:
+    """Standalone Memory Panel page: namespace-centric memory management."""
+    if not _streamlit_available():
+        return
+    import streamlit as st
+
+    from core.memory import (
+        list_memory_events,
+        quarantine_memory,
+        read_memory,
+        reset_memory,
+        write_memory,
+    )
+    from core.config import load_config
+    from core.database import connect_database
+
+    cfg = config or load_config()
+    st.title("Memory Panel")
+
+    if not experiment_ids:
+        st.info("No experiments yet. Create one in the Chat Console first.")
+        return
+
+    selected_exp = st.selectbox(
+        "Select experiment",
+        experiment_ids,
+        key="mem_panel_experiment",
+    )
+    if not selected_exp:
+        return
+
+    conn = connect_database(cfg.database_target)
+    try:
+        namespaces = _get_namespaces_for_experiment(conn, selected_exp)
+    finally:
+        conn.close()
+
+    if not namespaces:
+        st.info("No namespaces yet. Create a session in the Chat Console to establish one.")
+        return
+
+    namespace_options = namespaces + ["+ Create new namespace..."]
+    namespace_choice = st.selectbox(
+        "Memory namespace",
+        namespace_options,
+        key="mem_panel_namespace",
+        help="Select a namespace to inspect and manage its memory entries, or create a new isolated one.",
+    )
+
+    if namespace_choice == "+ Create new namespace...":
+        new_ns_name = st.text_input(
+            "New namespace name",
+            key="mem_panel_new_ns",
+            placeholder="e.g. namespace_isolated_1",
+        )
+        if st.button("Create Namespace", key="mem_panel_create_ns_btn"):
+            if not new_ns_name or not new_ns_name.strip():
+                st.warning("Namespace name is required.")
+            else:
+                # Persist by creating a placeholder session in the new namespace under this experiment.
+                # The namespace is stored on sessions, so we create a minimal session to establish it.
+                conn = connect_database(cfg.database_target)
+                try:
+                    from core.experiments import create_session
+
+                    create_session(
+                        conn,
+                        selected_exp,
+                        phase="baseline",
+                        memory_namespace=new_ns_name.strip(),
+                    )
+                    st.success(f"Namespace '{new_ns_name.strip()}' created.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Failed to create namespace: {_safe_error(exc)}")
+                finally:
+                    conn.close()
+        return
+
+    namespace = namespace_choice
+
+    # Load sessions in this namespace
+    conn = connect_database(cfg.database_target, readonly=True)
+    try:
+        sessions = _get_sessions_for_namespace(conn, selected_exp, namespace)
+    finally:
+        conn.close()
+
+    st.markdown(f"**Namespace:** `{namespace}`")
+    st.markdown(f"**Sessions:** {len(sessions)}")
+    if sessions:
+        st.dataframe(
+            [
+                {
+                    "session_id": s["id"],
+                    "phase": s.get("phase"),
+                    "started_at": s.get("started_at"),
+                }
+                for s in sessions
+            ],
+            width='stretch',
+        )
+
+    st.subheader("Memory Operations")
+
+    mem_col1, mem_col2, mem_col3, mem_col4, mem_col5 = st.columns(5)
+
+    with mem_col1:
+        if st.button("Read Memory (all)", key="mem_panel_read_btn"):
+            conn = connect_database(cfg.database_target, readonly=True)
+            try:
+                entries = read_memory(conn, namespace, policy="all")
+                if entries:
+                    with st.expander("Memory Entries", expanded=True):
+                        st.dataframe(
+                            [
+                                {
+                                    "key": e.get("memory_key"),
+                                    "value": (
+                                        json.dumps(e.get("value"))[:100]
+                                        if e.get("value")
+                                        else None
+                                    ),
+                                    "provenance": e.get("provenance", "N/A"),
+                                    "status": e.get("status", "N/A"),
+                                    "session_id": e.get("session_id"),
+                                }
+                                for e in entries
+                            ],
+                            width='stretch',
+                        )
+                else:
+                    st.info("No memory entries.")
+            finally:
+                conn.close()
+
+    with mem_col2:
+        target_session = None
+        if sessions:
+            target_session = st.selectbox(
+                "Target session",
+                [s["id"] for s in sessions],
+                key="mem_panel_target_session",
+            )
+        mem_key = st.text_input("Memory key", key="mem_panel_key", placeholder="key")
+        mem_value = st.text_area(
+            "Memory value", key="mem_panel_value", placeholder="value"
+        )
+        mem_provenance = st.selectbox(
+            "Provenance",
+            ["explicit", "trusted", "untrusted", "poison", "tool"],
+            key="mem_panel_provenance",
+        )
+        if st.button("Write Memory", key="mem_panel_write_btn"):
+            if not mem_key.strip():
+                st.warning("Memory key is required.")
+            elif not target_session:
+                st.warning("No target session available.")
+            else:
+                conn = connect_database(cfg.database_target)
+                try:
+                    write_memory(
+                        conn,
+                        target_session,
+                        mem_key.strip(),
+                        mem_value or "",
+                        provenance=mem_provenance,
+                    )
+                    st.success("Memory written.")
+                except Exception as exc:
+                    st.error(f"Write failed: {_safe_error(exc)}")
+                finally:
+                    conn.close()
+        if st.button("Write Poison Memory", key="mem_panel_write_poison_btn"):
+            if not mem_key.strip():
+                st.warning("Memory key is required.")
+            elif not target_session:
+                st.warning("No target session available.")
+            else:
+                conn = connect_database(cfg.database_target)
+                try:
+                    write_memory(
+                        conn,
+                        target_session,
+                        mem_key.strip(),
+                        mem_value or "",
+                        provenance="poison:lab_canary",
+                    )
+                    st.success("Poison memory written with canary provenance.")
+                except Exception as exc:
+                    st.error(f"Poison write failed: {_safe_error(exc)}")
+                finally:
+                    conn.close()
+
+    with mem_col3:
+        if st.button("Quarantine All", key="mem_panel_quarantine_btn"):
+            conn = connect_database(cfg.database_target)
+            try:
+                count = quarantine_memory(conn, namespace)
+                st.success(f"Quarantined {count} entries.")
+            except Exception as exc:
+                st.error(f"Quarantine failed: {_safe_error(exc)}")
+            finally:
+                conn.close()
+
+    with mem_col4:
+        if st.button("Reset Memory", key="mem_panel_reset_btn"):
+            conn = connect_database(cfg.database_target)
+            try:
+                count = reset_memory(conn, namespace)
+                st.success(f"Reset {count} entries.")
+            except Exception as exc:
+                st.error(f"Reset failed: {_safe_error(exc)}")
+            finally:
+                conn.close()
+
+    with mem_col5:
+        if st.button("Export Memory", key="mem_panel_export_btn"):
+            conn = connect_database(cfg.database_target, readonly=True)
+            try:
+                entries = list_memory_events(conn, namespace=namespace)
+                if entries:
+                    payload = json.dumps(entries, indent=2, default=str)
+                    st.download_button(
+                        "Download Memory JSON",
+                        data=payload,
+                        file_name=f"memory_{namespace}.json",
+                        mime="application/json",
+                        key="mem_panel_download",
+                    )
+                else:
+                    st.info("No memory entries to export.")
+            finally:
+                conn.close()
 
 
 # ---------------------------------------------------------------------------

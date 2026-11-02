@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+
+# psql -h /var/run/postgresql -U saif-reyad -d postgres -c "CREATE DATABASE memory_poisoning_lab;"
 import os
 import subprocess
 import sys
