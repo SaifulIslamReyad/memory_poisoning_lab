@@ -357,6 +357,7 @@ def render_chat_page(
         finish_experiment,
         get_session,
         get_turns,
+        list_experiments,
         list_sessions,
         transition_session,
     )
@@ -371,6 +372,7 @@ def render_chat_page(
     from core.detections import run_detectors
     from core.mitigations import STRATEGIES, apply_mitigation
     from core.config import load_config
+    from core.database import connect_database
     from core.models import validate_request
 
     st.title("Chat Console")
@@ -408,33 +410,85 @@ def render_chat_page(
     session: dict[str, Any] | None = None
     selected_session_id: str | None = None
 
-    # Experiment and session management lives on the Memory Panel page.
-    # Chat Console reads the active experiment/session from session state.
-    if st.session_state.get("chat_experiment_id"):
-        conn = _get_lab_connection(config, readonly=True)
-        try:
-            session = get_session(conn, st.session_state.chat_experiment_id)
-        finally:
-            conn.close()
-        if session is None:
-            st.session_state.chat_experiment_id = None
-            st.session_state.chat_session_id = None
-            st.session_state.chat_transcript_session_id = None
-            st.session_state.chat_messages = []
+    # Session selector: pick from existing experiments/sessions in this page
+    conn_cc = connect_database(config.database_target, readonly=True)
+    try:
+        exp_rows_cc = [
+            e["id"] for e in list_experiments(conn_cc)
+        ]
+    finally:
+        conn_cc.close()
 
+    exp_col_cc, sess_col_cc = st.columns(2)
+    with exp_col_cc:
+        if exp_rows_cc:
+            current_exp_cc = st.session_state.get("chat_experiment_id")
+            exp_options_cc = list(dict.fromkeys(exp_rows_cc + ([current_exp_cc] if current_exp_cc else [])))
+            selected_exp_cc = st.selectbox(
+                "Select experiment",
+                exp_options_cc,
+                index=exp_options_cc.index(current_exp_cc) if current_exp_cc in exp_options_cc else 0,
+                key="chat_exp_select_cc",
+            )
+        else:
+            selected_exp_cc = None
+            st.info("No experiments yet. Create one in the Memory Panel.")
+
+    with sess_col_cc:
+        if selected_exp_cc:
+            conn_cc2 = connect_database(config.database_target, readonly=True)
+            try:
+                sessions_cc = list_sessions(conn_cc2, experiment_id=selected_exp_cc)
+            finally:
+                conn_cc2.close()
+            sess_options_cc = [s["id"] for s in sessions_cc]
+            if sess_options_cc:
+                current_sess_cc = st.session_state.get("chat_session_id")
+                selected_session_id = st.selectbox(
+                    "Select session",
+                    sess_options_cc,
+                    index=sess_options_cc.index(current_sess_cc) if current_sess_cc in sess_options_cc else 0,
+                    key="chat_sess_select_cc",
+                )
+            else:
+                selected_session_id = None
+                st.info("No sessions yet. Create one in the Memory Panel.")
+        else:
+            selected_session_id = None
+
+    # Sync selection into session state
+    if selected_exp_cc != st.session_state.get("chat_experiment_id"):
+        st.session_state.chat_experiment_id = selected_exp_cc
+        st.session_state.chat_session_id = None
+        st.session_state.chat_transcript_session_id = None
+        st.session_state.chat_messages = []
+
+    if selected_session_id != st.session_state.get("chat_session_id"):
+        st.session_state.chat_session_id = selected_session_id
+        st.session_state.chat_transcript_session_id = None
+        st.session_state.chat_messages = []
+
+    # Load the active session object for phase/display
+    session = None
     if st.session_state.get("chat_session_id"):
         selected_session_id = st.session_state.chat_session_id
         conn = _get_lab_connection(config, readonly=True)
         try:
             sess = get_session(conn, selected_session_id)
-            if sess and sess.get("experiment_id") != st.session_state.chat_experiment_id:
-                session = None
-                selected_session_id = None
-                st.session_state.chat_session_id = None
-                st.session_state.chat_transcript_session_id = None
-                st.session_state.chat_messages = []
         finally:
             conn.close()
+        if sess is None:
+            st.session_state.chat_session_id = None
+            st.session_state.chat_transcript_session_id = None
+            st.session_state.chat_messages = []
+        elif st.session_state.get("chat_experiment_id") and sess.get("experiment_id") != st.session_state.chat_experiment_id:
+            session = None
+            selected_session_id = None
+            st.session_state.chat_session_id = None
+            st.session_state.chat_transcript_session_id = None
+            st.session_state.chat_messages = []
+        else:
+            session = sess
 
     st.subheader("Chat Transcript")
     job_id = st.session_state.get("chat_job_id")
@@ -479,6 +533,13 @@ def render_chat_page(
             st.rerun()
 
     messages = st.session_state.chat_messages
+
+    # Load transcript from DB when session changes
+    if selected_session_id and st.session_state.get("chat_transcript_session_id") != selected_session_id:
+        st.session_state.chat_messages = _load_transcript_turns(selected_session_id)
+        st.session_state.chat_transcript_session_id = selected_session_id
+        messages = st.session_state.chat_messages
+
     for msg in messages:
         role = msg.get("role", "user")
         turn_id = msg.get("turn_id")
@@ -842,7 +903,7 @@ def render_chat_page(
                 ):
                     _json_code(msg["raw_response"])
 
-    #     st.subheader("Poisoning Workflow")
+    st.subheader("Poisoning Workflow")
     if selected_session_id and session:
         workflow_cols = st.columns(4)
         with workflow_cols[0]:
@@ -953,7 +1014,8 @@ def render_chat_page(
                 finally:
                     conn.close()
     else:
-        st.info("Select a session to manage memory and poisoning workflow.")
+        st.info("Select an experiment and session above to access the poisoning workflow. "
+                "Create them first in the Memory Panel page.")
 
 
 # ---------------------------------------------------------------------------
