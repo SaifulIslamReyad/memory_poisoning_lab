@@ -206,6 +206,13 @@ class LabConfig:
 
 def load_config(base_dir: str | Path | None = None) -> LabConfig:
     """Load configuration from environment variables and optional .env file."""
+    # Attempt to load variables from a .env file if python-dotenv is installed
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except Exception:
+        pass
     # Resolve the root directory: explicit base_dir if provided, otherwise project root
     root = Path(base_dir).expanduser().resolve() if base_dir else _PROJECT_ROOT
     # Build the config, overriding defaults from environment variables where set
