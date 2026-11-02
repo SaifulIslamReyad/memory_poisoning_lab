@@ -122,9 +122,9 @@ def apply_mitigation(
                 SELECT s.id FROM sessions AS s
                 WHERE s.memory_namespace = ? AND m.status = 'active'
                   AND (
-                    lower(m.provenance) LIKE '%untrusted%'
-                    OR lower(m.provenance) LIKE '%poison%'
-                    OR lower(m.provenance) LIKE '%canary%'
+                    position('untrusted' in lower(m.provenance)) > 0
+                    OR position('poison' in lower(m.provenance)) > 0
+                    OR position('canary' in lower(m.provenance)) > 0
                   )
             )
             """,

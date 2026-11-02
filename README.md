@@ -50,6 +50,7 @@ Compare Groq-compatible models, create isolated experiment sessions, inject mark
 4. Start the application:
 
    ```bash
+   rm -rf gui/__pycache__ core/__pycache__ __pycache__
    streamlit run app.py
    ```
 

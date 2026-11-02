@@ -1555,6 +1555,134 @@ def render_memory_panel_page(
 
 
 # ---------------------------------------------------------------------------
+# Company Database Page
+# ---------------------------------------------------------------------------
+
+
+def _get_sandbox_tables(conn, schema: str) -> list[str]:
+    rows = conn.execute(
+        """
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = %s
+        ORDER BY table_name
+        """,
+        (schema,),
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def render_company_database_page(
+    config: Any | None = None,
+    experiment_ids: list[str] | None = None,
+) -> None:
+    """Standalone Company Database page: view and modify e-commerce sandbox data."""
+    if not _streamlit_available():
+        return
+    import streamlit as st
+
+    from core.database import connect_database
+    from core.tools import execute_postgres_sql, prepare_postgres_sandbox
+
+    cfg = config or load_config()
+    st.title("Company Database")
+
+    st.warning(
+        "⚠️ This page allows direct reads and writes to the e-commerce sandbox "
+        "schema for the selected experiment. Changes are not reversible unless "
+        "you manually restore them. Only the sandbox_<experiment_id> schema is "
+        "accessible; the lab's core tables are protected."
+    )
+
+    if not experiment_ids:
+        st.info("No experiments yet. Create one in the Memory Panel page first.")
+        return
+
+    selected_exp = st.selectbox(
+        "Select experiment",
+        experiment_ids,
+        key="company_db_experiment",
+    )
+    if not selected_exp:
+        return
+
+    # Ensure sandbox exists for this experiment (create from fixtures if needed)
+    from pathlib import Path
+
+    fixtures_dir = str(Path(__file__).resolve().parent.parent / "fixtures")
+    try:
+        schema = prepare_postgres_sandbox(cfg.database_target, fixtures_dir, selected_exp)
+    except Exception as exc:
+        st.error(f"Failed to initialize sandbox for experiment {selected_exp}: {_safe_error(exc)}")
+        return
+
+    st.markdown(f"**Sandbox schema:** `{schema}`")
+
+    conn = connect_database(cfg.database_target, readonly=True)
+    try:
+        tables = _get_sandbox_tables(conn, schema)
+    finally:
+        conn.close()
+
+    if not tables:
+        st.info("No tables found in the sandbox schema yet.")
+        return
+
+    tab_view, tab_sql = st.tabs(["Browse Tables", "Run SQL"])
+
+    with tab_view:
+        selected_table = st.selectbox(
+            "Select table",
+            tables,
+            key="company_db_table",
+        )
+        if selected_table:
+            conn = connect_database(cfg.database_target, readonly=True)
+            try:
+                cur = conn.execute(
+                    f'SELECT * FROM "{schema}"."{selected_table}" LIMIT 100'
+                )
+                columns = [desc[0] for desc in cur.description]
+                data = [dict(zip(columns, row)) for row in cur.fetchall()]
+            finally:
+                conn.close()
+            st.markdown(f"**{selected_table}** ({len(data)} rows shown, limit 100)")
+            if data:
+                st.dataframe(data, width='stretch')
+            else:
+                st.info("Table is empty.")
+
+    with tab_sql:
+        sql = st.text_area(
+            "SQL query",
+            key="company_db_sql",
+            placeholder="SELECT * FROM products LIMIT 10;\n-- or:\nUPDATE products SET price = 99.99 WHERE id = 1;",
+            height=200,
+        )
+        col_exec, col_clear = st.columns([1, 1])
+        with col_exec:
+            if st.button("Execute SQL", key="company_db_exec_btn"):
+                if not sql.strip():
+                    st.warning("Enter a SQL statement first.")
+                else:
+                    try:
+                        result = execute_postgres_sql(
+                            cfg.database_target,
+                            schema,
+                            sql,
+                        )
+                        st.success("Executed successfully.")
+                        if result:
+                            st.dataframe(result, width='stretch')
+                    except Exception as exc:
+                        st.error(f"SQL error: {_safe_error(exc)}")
+        with col_clear:
+            if st.button("Clear", key="company_db_clear_btn"):
+                st.session_state.company_db_sql = ""
+                st.rerun()
+
+
+# ---------------------------------------------------------------------------
 # Dashboard Page
 # ---------------------------------------------------------------------------
 

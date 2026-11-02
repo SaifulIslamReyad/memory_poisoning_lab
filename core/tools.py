@@ -211,6 +211,59 @@ __all__ = [
     "QueryLimitError",
     "UnsafeSQLError",
     "execute_postgres_read_only_sql",
+    "execute_postgres_sql",
     "prepare_postgres_sandbox",
     "register_postgres_read_only_tool",
 ]
+
+
+def execute_postgres_sql(
+    database_url: str,
+    schema: str,
+    sql: str,
+    *,
+    max_rows: int = 1000,
+    max_result_bytes: int = 10 * 1024 * 1024,
+    timeout: float = 30.0,
+) -> list[dict[str, Any]]:
+    """Execute a SQL statement against an isolated PostgreSQL schema (write-enabled).
+
+    Unlike execute_postgres_read_only_sql, this allows INSERT/UPDATE/DELETE/DDL
+    but still restricts access to the given schema only. Intended for the
+    Company Database admin page where an operator deliberately modifies data.
+    """
+    query = sql.strip()
+    if not query:
+        raise UnsafeSQLError("SQL must be a non-empty string")
+    if _contains_internal_semicolon(query):
+        raise UnsafeSQLError("multiple SQL statements are not allowed")
+    if "--" in query or "/*" in query or "*/" in query:
+        raise UnsafeSQLError("SQL comments are not allowed")
+    if any(
+        token in query.lower()
+        for token in ("pg_catalog.", "information_schema.", "public.")
+    ):
+        raise UnsafeSQLError("cross-schema queries are not allowed")
+    _validate_postgres_schema_access(query, schema)
+    quoted_schema = _quote_postgres_identifier(schema)
+    connection = PostgresConnection(database_url, readonly=False, timeout=timeout)
+    try:
+        connection.execute(f"SET search_path TO {quoted_schema}")
+        cursor = connection.execute(query)
+        if cursor.description is None:
+            return [{"status": "ok", "rows_affected": cursor.rowcount}]
+        columns = [item.name for item in cursor.description]
+        rows: list[dict[str, Any]] = []
+        total_bytes = 0
+        for raw in cursor.fetchmany(max_rows + 1):
+            if len(rows) >= max_rows:
+                raise QueryLimitError(f"result exceeds {max_rows} rows")
+            row = dict(raw)
+            size = _json_size(row)
+            if total_bytes + size > max_result_bytes:
+                raise QueryLimitError(f"result exceeds {max_result_bytes} bytes")
+            rows.append({column: row.get(column) for column in columns})
+            total_bytes += size
+        return rows
+    finally:
+        connection.close()

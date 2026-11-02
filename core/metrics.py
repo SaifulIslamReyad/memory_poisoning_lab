@@ -130,11 +130,11 @@ def summarize_experiment(
                COALESCE(SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END), 0) AS active,  -- active events
                COALESCE(SUM(CASE WHEN status = 'quarantined' THEN 1 ELSE 0 END), 0) AS quarantined,  -- quarantined events
                COALESCE(SUM(CASE WHEN status = 'deleted' THEN 1 ELSE 0 END), 0) AS deleted,  -- deleted events
-               COALESCE(SUM(CASE WHEN status = 'active' AND (                               -- untrusted active events
-                    lower(provenance) LIKE '%untrusted%' OR
-                    lower(provenance) LIKE '%poison%' OR
-                    lower(provenance) LIKE '%canary%'
-                ) THEN 1 ELSE 0 END), 0) AS untrusted
+                COALESCE(SUM(CASE WHEN status = 'active' AND (
+                     position('untrusted' in lower(provenance)) > 0 OR
+                     position('poison' in lower(provenance)) > 0 OR
+                     position('canary' in lower(provenance)) > 0
+                 ) THEN 1 ELSE 0 END), 0) AS untrusted
         FROM memory_events m
         JOIN sessions s ON s.id = m.session_id
         WHERE s.experiment_id = ?
