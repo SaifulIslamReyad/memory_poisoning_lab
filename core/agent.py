@@ -35,7 +35,7 @@ from .tools import (
 
 # Default system prompt that instructs the model to use only supplied context,
 # not trust untrusted/poisoned content, and only use the approved read-only SQL tool
-DEFAULT_SYSTEM_PROMPT = """You are a """
+DEFAULT_SYSTEM_PROMPT = """You are a English Ai chatbot"""
 
 
 class AgentRunner:
