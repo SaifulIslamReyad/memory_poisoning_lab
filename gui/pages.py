@@ -380,6 +380,7 @@ def render_chat_page(
         delete_experiment,
         delete_session,
         finish_experiment,
+        get_experiment,
         get_session,
         get_turns,
         list_experiments,
@@ -444,6 +445,24 @@ def render_chat_page(
     finally:
         conn_cc.close()
 
+    # Cache experiment titles for labels
+    _exp_title_cache_cc: dict[str, str] = {}
+    conn_lbl_cc = connect_database(config.database_target, readonly=True)
+    try:
+        for eid in exp_rows_cc:
+            erow = get_experiment(conn_lbl_cc, eid)
+            if erow:
+                _exp_title_cache_cc[eid] = erow.get("title") or "Untitled"
+    finally:
+        conn_lbl_cc.close()
+
+    def _exp_label(eid: str) -> str:
+        return f"{_exp_title_cache_cc.get(eid, 'Untitled')} ({eid})"
+
+    def _sess_label(s: dict[str, Any]) -> str:
+        key = s.get("session_key") or s["id"]
+        return f"{key} ({s['id']})"
+
     exp_col_cc, sess_col_cc = st.columns(2)
     with exp_col_cc:
         if exp_rows_cc:
@@ -452,6 +471,7 @@ def render_chat_page(
             selected_exp_cc = st.selectbox(
                 "Select experiment",
                 exp_options_cc,
+                format_func=_exp_label,
                 index=exp_options_cc.index(current_exp_cc) if current_exp_cc in exp_options_cc else 0,
                 key="chat_exp_select_cc",
             )
@@ -466,15 +486,19 @@ def render_chat_page(
                 sessions_cc = list_sessions(conn_cc2, experiment_id=selected_exp_cc)
             finally:
                 conn_cc2.close()
-            sess_options_cc = [s["id"] for s in sessions_cc]
+            sess_options_cc = list(sessions_cc)
             if sess_options_cc:
                 current_sess_cc = st.session_state.get("chat_session_id")
-                selected_session_id = st.selectbox(
+                sess_ids_cc = [s.get("id") for s in sess_options_cc]
+                default_index_cc = sess_ids_cc.index(current_sess_cc) if current_sess_cc in sess_ids_cc else 0
+                selected_session_id_raw = st.selectbox(
                     "Select session",
                     sess_options_cc,
-                    index=sess_options_cc.index(current_sess_cc) if current_sess_cc in sess_options_cc else 0,
+                    format_func=_sess_label,
+                    index=default_index_cc,
                     key="chat_sess_select_cc",
                 )
+                selected_session_id = selected_session_id_raw.get("id") if isinstance(selected_session_id_raw, dict) else selected_session_id_raw
             else:
                 selected_session_id = None
                 st.info("No sessions yet. Create one in the Memory Panel.")
@@ -1087,6 +1111,7 @@ def render_memory_panel_page(
         create_session,
         delete_experiment,
         delete_session,
+        get_experiment,
         get_session,
         list_sessions,
     )
@@ -1140,6 +1165,34 @@ def render_memory_panel_page(
             )
         )
         exp_options = [item for item in exp_options if item]
+
+        # Cache experiment titles once (avoid opening a DB connection per label render)
+        _exp_title_cache: dict[str, str] = {}
+        conn_lbl = connect_database(cfg.database_target, readonly=True)
+        try:
+            for eid in exp_options:
+                erow = get_experiment(conn_lbl, eid)
+                if erow:
+                    _exp_title_cache[eid] = erow.get("title") or "Untitled"
+        finally:
+            conn_lbl.close()
+
+        def _mem_exp_label(eid: str) -> str:
+            return f"{_exp_title_cache.get(eid, 'Untitled')} ({eid})"
+
+        if exp_options:
+            selected_exp = st.selectbox(
+                "Select experiment",
+                exp_options,
+                format_func=_mem_exp_label,
+                index=(
+                    exp_options.index(current_exp) if current_exp in exp_options else 0
+                ),
+                key="mem_panel_experiment_select",
+            )
+        else:
+            selected_exp = None
+
         new_exp_name = st.text_input(
             "New experiment name",
             key="mem_panel_new_exp_name",
@@ -1162,17 +1215,6 @@ def render_memory_panel_page(
             ["none", *sorted(STRATEGIES)],
             key="mem_panel_new_mitigation_strategy",
         )
-        if exp_options:
-            selected_exp = st.selectbox(
-                "Select experiment",
-                exp_options,
-                index=(
-                    exp_options.index(current_exp) if current_exp in exp_options else 0
-                ),
-                key="mem_panel_experiment_select",
-            )
-        else:
-            selected_exp = None
         if st.button("Create Experiment", key="mem_panel_create_exp_btn"):
             if not selected_model:
                 st.warning("Select a model before creating an experiment.")
@@ -1242,12 +1284,18 @@ def render_memory_panel_page(
                 )
             finally:
                 conn.close()
-            sess_options = [s["id"] for s in sessions]
+            sess_options = list(sessions)
             if sess_options:
                 current_sess = st.session_state.chat_session_id
+
+                def _mem_sess_label(s: dict[str, Any]) -> str:
+                    key = s.get("session_key") or s["id"]
+                    return f"{key} ({s['id']})"
+
                 selected_session_id = st.selectbox(
                     "Select session",
                     sess_options,
+                    format_func=_mem_sess_label,
                     index=(
                         sess_options.index(current_sess)
                         if current_sess in sess_options
@@ -1315,6 +1363,12 @@ def render_memory_panel_page(
         else:
             new_namespace = namespace_choice
 
+        new_session_name = st.text_input(
+            "Session name (optional)",
+            key="mem_panel_new_session_name",
+            placeholder="e.g. poison-test-1",
+        )
+
         if st.button("Create Session", key="mem_panel_create_sess_btn"):
             if st.session_state.chat_experiment_id:
                 conn = connect_database(cfg.database_target)
@@ -1322,6 +1376,7 @@ def render_memory_panel_page(
                     sess_id = create_session(
                         conn,
                         st.session_state.chat_experiment_id,
+                        session_key=new_session_name.strip() or None,
                         phase=new_session_phase,
                         memory_namespace=new_namespace,
                     )

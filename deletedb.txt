@@ -1,0 +1,13 @@
+
+# 1. List existing databases
+psql -h /var/run/postgresql -U saif-reyad -d postgres -c "\l"
+
+# 2. Drop the old lab database (terminate active connections first)
+psql -h /var/run/postgresql -U saif-reyad -d postgres -c "
+  SELECT pg_terminate_backend(pid)
+  FROM pg_stat_activity
+  WHERE datname = 'memory_poisoning_lab' AND pid <> pg_backend_pid();
+" && psql -h /var/run/postgresql -U saif-reyad -d postgres -c "DROP DATABASE memory_poisoning_lab;"
+
+# 3. Create a fresh database
+psql -h /var/run/postgresql -U saif-reyad -d postgres -c "CREATE DATABASE memory_poisoning_lab;"
