@@ -171,7 +171,7 @@ class AgentRunner:
                     {
                         "key": item.get("memory_key"),
                         "value": item.get("value"),
-                        "provenance": item.get("provenance"),
+                        # "provenance": item.get("provenance"),
                         "confidence": item.get("confidence"),
                         "status": item.get("status"),
                     }

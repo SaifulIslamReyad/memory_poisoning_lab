@@ -941,31 +941,32 @@ def render_chat_page(
             f"{policy_desc}"
         )
 
-        workflow_cols = st.columns(4)
-        with workflow_cols[0]:
-            if st.button("Start Poison Phase", key="phase_poison_btn"):
-                conn = _get_lab_connection(config)
-                try:
-                    transition_session(conn, selected_session_id, "poison")
-                    st.success("Session moved to poison phase.")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Phase transition failed: {_safe_error(exc)}")
-                finally:
-                    conn.close()
-        with workflow_cols[1]:
-            if st.button("Start Probe Phase", key="phase_probe_btn"):
-                conn = _get_lab_connection(config)
-                try:
-                    transition_session(conn, selected_session_id, "probe")
-                    st.success("Session moved to probe phase.")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Phase transition failed: {_safe_error(exc)}")
-                finally:
-                    conn.close()
-        with workflow_cols[2]:
-            if st.button("Run Detectors", key="run_detectors_btn"):
+        # Phase transition buttons (all close together in one row)
+        phase_cols = st.columns(5)
+        phase_actions = [
+            ("baseline", "Start Baseline Phase", "phase_baseline_btn"),
+            ("poison", "Start Poison Phase", "phase_poison_btn"),
+            ("probe", "Start Probe Phase", "phase_probe_btn"),
+            ("mitigation", "Start Mitigation Phase", "phase_mitigation_btn"),
+            ("post_mitigation", "Start Post-Mitigation Phase", "phase_post_mitigation_btn"),
+        ]
+        for col, (phase, label, key) in zip(phase_cols, phase_actions):
+            with col:
+                if st.button(label, key=key, use_container_width=True):
+                    conn = _get_lab_connection(config)
+                    try:
+                        transition_session(conn, selected_session_id, phase)
+                        st.success(f"Session moved to {phase} phase.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Phase transition failed: {_safe_error(exc)}")
+                    finally:
+                        conn.close()
+
+        # Action buttons row (detectors, mitigation, finish)
+        action_cols = st.columns(4)
+        with action_cols[0]:
+            if st.button("Run Detectors", key="run_detectors_btn", use_container_width=True):
                 conn = _get_lab_connection(config)
                 try:
                     turns = get_turns(conn, session_id=selected_session_id)
@@ -983,13 +984,13 @@ def render_chat_page(
                     st.error(f"Detection failed: {_safe_error(exc)}")
                 finally:
                     conn.close()
-        with workflow_cols[3]:
+        with action_cols[1]:
             mitigation_choice = st.selectbox(
                 "Mitigation",
                 ["none", *sorted(STRATEGIES)],
                 key="workflow_mitigation",
             )
-            if st.button("Apply Mitigation", key="apply_mitigation_btn"):
+            if st.button("Apply Mitigation", key="apply_mitigation_btn", use_container_width=True):
                 if mitigation_choice == "none":
                     st.warning("Select a mitigation strategy.")
                 else:
@@ -1007,35 +1008,10 @@ def render_chat_page(
                         st.error(f"Mitigation failed: {_safe_error(exc)}")
                     finally:
                         conn.close()
-        phase_row = st.columns(2)
-        with phase_row[0]:
-            if st.button("Start Mitigation Phase", key="phase_mitigation_btn"):
-                conn = _get_lab_connection(config)
-                try:
-                    transition_session(conn, selected_session_id, "mitigation")
-                    st.success("Session moved to mitigation phase.")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Phase transition failed: {_safe_error(exc)}")
-                finally:
-                    conn.close()
-        with phase_row[1]:
-            if st.button(
-                "Start Post-Mitigation Phase", key="phase_post_mitigation_btn"
-            ):
-                conn = _get_lab_connection(config)
-                try:
-                    transition_session(conn, selected_session_id, "post_mitigation")
-                    st.success("Session moved to post-mitigation phase.")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Phase transition failed: {_safe_error(exc)}")
-                finally:
-                    conn.close()
-
-        finish_col = st.columns(1)[0]
-        with finish_col:
-            if st.button("Finish Experiment", key="finish_experiment_btn"):
+        with action_cols[2]:
+            st.empty()  # spacing placeholder
+        with action_cols[3]:
+            if st.button("Finish Experiment", key="finish_experiment_btn", use_container_width=True):
                 conn = _get_lab_connection(config)
                 try:
                     finish_experiment(
