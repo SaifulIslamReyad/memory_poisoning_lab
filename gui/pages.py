@@ -339,6 +339,31 @@ def render_catalog_page(
 # ---------------------------------------------------------------------------
 
 
+_PHASE_TO_POLICY = {
+    "baseline": "trusted",
+    "poison": "untrusted",
+    "probe": "active",
+    "mitigation": "trusted",
+    "post_mitigation": "trusted",
+}
+
+
+def _memory_policy_from_phase(phase: str) -> str:
+    return _PHASE_TO_POLICY.get(phase, "active")
+
+
+def _policy_description(policy: str) -> str:
+    if policy == "trusted":
+        return "Model sees only trusted-provenance memory. Poison entries are hidden."
+    if policy == "untrusted":
+        return "Model sees only untrusted-provenance memory. Trusted entries are hidden."
+    if policy == "active":
+        return "Model sees all active (non-quarantined) memory regardless of provenance."
+    if policy == "all":
+        return "Model sees everything, including expired/inactive entries."
+    return "Model sees all active memory."
+
+
 def render_chat_page(
     models: list[dict[str, Any]] | None = None,
     experiment_ids: list[str] | None = None,
@@ -905,6 +930,17 @@ def render_chat_page(
 
     st.subheader("Poisoning Workflow")
     if selected_session_id and session:
+        current_phase = session.get("phase", "baseline")
+        effective_policy = _memory_policy_from_phase(current_phase)
+        policy_desc = _policy_description(effective_policy)
+
+        st.info(
+            f"**Session:** `{selected_session_id}`  |  "
+            f"**Phase:** `{current_phase}`  |  "
+            f"**Memory Policy:** `{effective_policy}`  |  "
+            f"{policy_desc}"
+        )
+
         workflow_cols = st.columns(4)
         with workflow_cols[0]:
             if st.button("Start Poison Phase", key="phase_poison_btn"):
@@ -1409,6 +1445,11 @@ def render_memory_panel_page(
     st.markdown(f"**Namespace:** `{namespace}`")
     st.markdown(f"**Sessions:** {len(sessions)}")
     if sessions:
+        phases_in_ns = sorted({s.get("phase") for s in sessions if s.get("phase")})
+        phase_info = " | ".join(
+            f"{p} → {_memory_policy_from_phase(p)}" for p in phases_in_ns
+        )
+        st.caption(f"Session phases & policies: {phase_info}")
         st.dataframe(
             [
                 {
